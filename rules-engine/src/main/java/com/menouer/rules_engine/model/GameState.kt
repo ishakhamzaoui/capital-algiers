@@ -1,0 +1,45 @@
+package com.menouer.rules_engine.model
+
+import com.menouer.economy_data.BoardConfig
+import com.menouer.rules_engine.dice.DiceRoll
+
+/**
+ * The complete authoritative game state, per TechnicalSpecification.md §3
+ * and MultiplayerProtocol.md §18's minimum snapshot content.
+ *
+ * [config] is the static economy/board data (economy-data's BoardConfig) —
+ * carried on GameState itself rather than injected separately into every
+ * RulesEngine call, since every rule needs it and it never changes mid-match.
+ *
+ * [consecutiveDoublesCount] tracks doubles rolled so far *this turn*, for the
+ * 3-consecutive-doubles-to-jail rule (GameRules.md §5). It resets to 0 at the
+ * start of every turn.
+ */
+data class GameState(
+    val stateVersion: Long = 0,
+    val config: BoardConfig,
+    val players: List<PlayerState>,
+    val assets: Map<AssetId, AssetState>,
+    val activePlayerId: PlayerId,
+    val phase: TurnPhase,
+    val bankHouses: Int,
+    val bankHotels: Int,
+    val chanceDeck: List<String>,
+    val chestDeck: List<String>,
+    val consecutiveDoublesCount: Int = 0,
+    val lastRoll: DiceRoll? = null,
+    val pendingAuction: AuctionState? = null,
+    val pendingTrade: TradeState? = null
+) {
+    val activePlayer: PlayerState
+        get() = players.first { it.id == activePlayerId }
+
+    fun player(id: PlayerId): PlayerState =
+        players.first { it.id == id }
+
+    fun playerOrNull(id: PlayerId): PlayerState? =
+        players.firstOrNull { it.id == id }
+
+    val nonBankruptPlayers: List<PlayerState>
+        get() = players.filterNot { it.bankrupt }
+}
