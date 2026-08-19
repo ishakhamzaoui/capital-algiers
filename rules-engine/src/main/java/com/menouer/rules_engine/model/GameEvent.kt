@@ -27,6 +27,14 @@ sealed class GameEvent {
 
     data class SentToJail(val playerId: PlayerId, val reason: JailReason) : GameEvent()
 
+    /** Generic "the landed space has been resolved" marker, mirrors MultiplayerProtocol.md §7's LandingResolved. */
+    data class LandingResolved(val playerId: PlayerId, val position: Int) : GameEvent()
+
+    data class TaxPaid(val playerId: PlayerId, val amount: Int) : GameEvent()
+
+    /** Emitted when a double grants the same player a bonus roll instead of ending the turn (GameRules.md §5). */
+    data class BonusRollGranted(val playerId: PlayerId) : GameEvent()
+
     data class TurnChanged(val newActivePlayerId: PlayerId) : GameEvent()
 
     data object GameEnded : GameEvent()
