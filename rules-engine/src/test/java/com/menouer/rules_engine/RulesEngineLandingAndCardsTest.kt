@@ -133,15 +133,16 @@ class RulesEngineLandingAndCardsTest {
 
     @Test
     fun `a backward MoveRelative card never pays GO even when it wraps past index 0`() {
-        var state = TestFixtures.newGame(listOf("p1", "p2")).atPosition("p1", 1) // Dergana
-        state = state.copy(chanceDeck = listOf("CH06") + state.chanceDeck.filterNot { it == "CH06" }) // -3
+        var state = TestFixtures.newGame(listOf("p1", "p2")).atPosition("p1", 2) // Chest Capital
+        state = state.copy(chestDeck = listOf("CC16") + state.chestDeck.filterNot { it == "CC16" }) // Move 3 spaces backward
         state = readyToResolve(state)
 
         val result = applied(engine.resolveLanding(state))
 
-        assertEquals(38, result.newState.player("p1").position) // 1 - 3 -> wraps to 38 (Luxury Tax)
+        assertEquals(39, result.newState.player("p1").position) // 2 - 3 -> wraps to 39
         assertTrue(result.events.none { it is GameEvent.GoCollected })
-        assertEquals(150_000 - 10_000, result.newState.player("p1").balance) // luxury tax charged after landing
+        assertEquals(TurnPhase.AWAITING_PURCHASE_DECISION, result.newState.phase)
+        assertEquals(150_000, result.newState.player("p1").balance) // No GO reward
     }
 
     @Test
@@ -238,15 +239,16 @@ class RulesEngineLandingAndCardsTest {
     @Test
     fun `MoveToNearestStation card charges double the usual station rent when owned by another player`() {
         var state = TestFixtures.newGame(listOf("p1", "p2")).own("AghaStation", "p2")
-        state = state.atPosition("p1", 0) // GO; nearest station forward is AghaStation at index 5
+        state = state.atPosition("p1", 36) // Chance; nearest station forward is AghaStation at index 5
         state = state.copy(chanceDeck = listOf("CH04") + state.chanceDeck.filterNot { it == "CH04" })
         state = readyToResolve(state)
 
         val result = applied(engine.resolveLanding(state))
 
         assertEquals(5, result.newState.player("p1").position)
-        assertEquals(150_000 - 5_000, result.newState.player("p1").balance) // 2,500 base * 2
+        assertEquals(150_000 + 20_000 - 5_000, result.newState.player("p1").balance) // Crosses GO: +20,000, then pays double 2,500 station rent = -5,000
         assertEquals(TurnPhase.AWAITING_OPTIONAL_ACTIONS, result.newState.phase)
+        assertTrue(result.events.any { it is GameEvent.RentPaid && it.amount == 5_000 })
     }
 
     @Test
@@ -264,12 +266,13 @@ class RulesEngineLandingAndCardsTest {
 
     @Test
     fun `MoveToNearestStation card offers a purchase decision when the nearest station is unowned`() {
-        var state = TestFixtures.newGame(listOf("p1", "p2")).atPosition("p1", 0) // GO -> nearest is AghaStation, unowned
+        var state = TestFixtures.newGame(listOf("p1", "p2")).atPosition("p1", 36) // Chance -> nearest is AghaStation, unowned
         state = state.copy(chanceDeck = listOf("CH04") + state.chanceDeck.filterNot { it == "CH04" })
         state = readyToResolve(state)
 
         val result = applied(engine.resolveLanding(state))
 
+        assertEquals(5, result.newState.player("p1").position)
         assertEquals(TurnPhase.AWAITING_PURCHASE_DECISION, result.newState.phase)
         assertFalse(result.events.any { it is GameEvent.RentPaid })
     }
