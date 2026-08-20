@@ -10,6 +10,10 @@ typealias AssetId = String
  * [jailTurnsUsed] counts failed doubles-attempts while jailed (0..2), per the
  * jail state machine in TechnicalSpecification.md §5 / GameRules.md §12
  * Addendum A2. It reaches 2 right before the forced turn-3 roll.
+ *
+ * There is deliberately no `ownedAssets` field here: ownership lives solely on
+ * [AssetState.ownerId], so there's exactly one place that can go stale. Use
+ * GameState.assetsOwnedBy(playerId) to look up what a player owns.
  */
 data class PlayerState(
     val id: PlayerId,
@@ -18,7 +22,6 @@ data class PlayerState(
     val inJail: Boolean = false,
     val jailTurnsUsed: Int = 0,
     val getOutOfJailCards: Int = 0,
-    val ownedAssets: Set<AssetId> = emptySet(),
     val bankrupt: Boolean = false
 )
 

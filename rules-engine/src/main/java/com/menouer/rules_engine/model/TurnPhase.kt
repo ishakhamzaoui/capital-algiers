@@ -8,6 +8,7 @@ package com.menouer.rules_engine.model
 enum class TurnPhase {
     AWAITING_ROLL,
     RESOLVING_LANDING,
+    AWAITING_PURCHASE_DECISION,
     AWAITING_OPTIONAL_ACTIONS,
     IN_AUCTION,
     IN_TRADE,

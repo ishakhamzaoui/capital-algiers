@@ -21,6 +21,7 @@ data class BoardConfig(
     val stationsById: Map<String, StationConfig> by lazy { stations.associateBy { it.id } }
     val utilitiesById: Map<String, UtilityConfig> by lazy { utilities.associateBy { it.id } }
     val spacesByIndex: Map<Int, BoardSpace> by lazy { spaces.associateBy { it.index } }
+    val cardsById: Map<String, CardDef> by lazy { (chanceDeck + chestDeck).associateBy { it.id } }
 
     /** All 22 properties belonging to a given group, useful for monopoly/build checks. */
     fun propertiesInGroup(group: PropertyGroup): List<PropertyConfig> =

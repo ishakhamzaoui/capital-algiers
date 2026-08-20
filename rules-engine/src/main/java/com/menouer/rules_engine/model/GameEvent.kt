@@ -8,10 +8,10 @@ import com.menouer.rules_engine.dice.DiceRoll
  * so :protocol can broadcast these near-verbatim in a later milestone,
  * without rules-engine knowing anything about networking.
  *
- * This is intentionally a starting set covering Session 0/1 needs (roll,
- * move, GO, turn change, jail entry). Later sessions add events for rent,
- * purchases, auctions, building, mortgages, trades, and bankruptcy as those
- * pieces of the engine are implemented.
+ * This is intentionally a starting set covering Session 0/1/2 needs (roll,
+ * move, GO, turn change, jail entry, rent, purchase offers, card effects).
+ * Later sessions add events for building, mortgages, trades, auctions, and
+ * bankruptcy as those pieces of the engine are implemented.
  */
 sealed class GameEvent {
     data class DiceRolled(val playerId: PlayerId, val roll: DiceRoll) : GameEvent()
@@ -31,6 +31,25 @@ sealed class GameEvent {
     data class LandingResolved(val playerId: PlayerId, val position: Int) : GameEvent()
 
     data class TaxPaid(val playerId: PlayerId, val amount: Int) : GameEvent()
+
+    /** Rent charged for landing on another player's non-mortgaged property/station/utility (GameRules.md §8). */
+    data class RentPaid(val payerId: PlayerId, val ownerId: PlayerId, val assetId: AssetId, val amount: Int) : GameEvent()
+
+    /** Landed on an unowned purchasable asset; engine is now AWAITING_PURCHASE_DECISION. */
+    data class PurchaseDecisionPending(val playerId: PlayerId, val assetId: AssetId) : GameEvent()
+
+    data class CardDrawn(val playerId: PlayerId, val cardId: String, val deck: com.menouer.economy_data.Deck) : GameEvent()
+
+    /** Cards.md CollectFromBank effect. */
+    data class CardBankPayout(val playerId: PlayerId, val amount: Int) : GameEvent()
+
+    /** Cards.md PayToBank / PropertyRepairs effects. */
+    data class CardBankCharge(val playerId: PlayerId, val amount: Int) : GameEvent()
+
+    /** Cards.md PayEachPlayer / CollectFromEachPlayer effects, emitted once per counterparty. */
+    data class CardPlayerToPlayerPayment(val fromPlayerId: PlayerId, val toPlayerId: PlayerId, val amount: Int) : GameEvent()
+
+    data class GetOutOfJailCardReceived(val playerId: PlayerId) : GameEvent()
 
     /** Emitted when a double grants the same player a bonus roll instead of ending the turn (GameRules.md §5). */
     data class BonusRollGranted(val playerId: PlayerId) : GameEvent()

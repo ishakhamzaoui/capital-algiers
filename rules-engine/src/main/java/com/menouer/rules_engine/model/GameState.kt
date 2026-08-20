@@ -42,4 +42,8 @@ data class GameState(
 
     val nonBankruptPlayers: List<PlayerState>
         get() = players.filterNot { it.bankrupt }
+
+    /** Every asset currently owned by [playerId] — the single source of truth for "what does X own". */
+    fun assetsOwnedBy(playerId: PlayerId): List<AssetState> =
+        assets.values.filter { it.ownerId == playerId }
 }

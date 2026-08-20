@@ -1,5 +1,6 @@
 package com.menouer.rules_engine
 
+import com.menouer.economy_data.CardEffect
 import com.menouer.economy_data.SpaceType
 import com.menouer.rules_engine.dice.DiceRoll
 import com.menouer.rules_engine.model.AssetId
@@ -14,17 +15,23 @@ import com.menouer.rules_engine.model.TradeProposal
 import com.menouer.rules_engine.model.TurnPhase
 
 /**
- * Session 1 implements: applyRoll, resolveLanding (only for the space types
- * that don't depend on rent/ownership — TAX, FREE_PARKING, the visiting side
- * of JAIL, and GO_TO_JAIL), and endTurn (including the doubles-bonus-roll
- * rule and basic win detection).
+ * Session 1 implemented: applyRoll, endTurn, and the parts of landing
+ * resolution that don't depend on rent/ownership (TAX, FREE_PARKING,
+ * JAIL-visiting, GO_TO_JAIL).
  *
- * PROPERTY / STATION / UTILITY / CHANCE / COMMUNITY_CHEST landing resolution
- * is completed in Session 2, since it depends on rent calculation. Auctions,
- * building, mortgages, trading, jail actions, and full bankruptcy handling
- * are completed in their respective later sessions (see RulesEngine.kt's
- * class doc). Calling those before their session lands throws NotImplementedError
- * on purpose, so a gap is loud rather than silently wrong.
+ * Session 2 (this pass) adds: PROPERTY/STATION/UTILITY landing (purchase
+ * offer via AWAITING_PURCHASE_DECISION, or rent via RentCalculator), and
+ * full Chance/Community Chest card resolution — folded into this session
+ * rather than a separate one because two card effects (advance-to-nearest-
+ * station/utility) need rent math, and several cards can chain into a
+ * second landing (another card, a tax, a jail-send) that also needs this
+ * session's machinery. Landing resolution is therefore recursive: a card
+ * that moves the player fully resolves wherever they end up, exactly as if
+ * they'd landed there via a normal roll.
+ *
+ * Auctions/purchase decisions (buyAsset/declinePurchase/placeBid), building,
+ * mortgages, trading, and jail actions remain TODO stubs for their own
+ * sessions (see RulesEngine.kt's class doc).
  */
 class RulesEngineImpl : RulesEngine {
 
@@ -35,24 +42,15 @@ class RulesEngineImpl : RulesEngine {
         if (player.bankrupt) return EngineResult.Rejected(EngineError.PLAYER_BANKRUPT)
 
         val events = mutableListOf<GameEvent>(GameEvent.DiceRolled(playerId, dice))
-
         val doublesCount = if (dice.isDouble) state.consecutiveDoublesCount + 1 else state.consecutiveDoublesCount
 
         if (dice.isDouble && doublesCount == 3) {
             // GameRules.md §5: on the 3rd consecutive double, the player does NOT make
             // the movement associated with that roll — they go directly to jail, the
             // turn ends immediately, and no GO payment occurs regardless of route.
-            val jailSpace = state.config.spaces.first { it.type == SpaceType.JAIL }
-            val jailedPlayer = player.copy(position = jailSpace.index, inJail = true, jailTurnsUsed = 0)
-            events += GameEvent.SentToJail(playerId, JailReason.THREE_CONSECUTIVE_DOUBLES)
-
-            val stateAfterJailing = state.copy(
-                players = state.players.replace(jailedPlayer),
-                lastRoll = dice,
-                consecutiveDoublesCount = 0
-            )
-            val (finalState, turnEvents) = advanceToNextPlayer(stateAfterJailing)
-            return EngineResult.Applied(finalState, events + turnEvents)
+            val stateWithRoll = state.copy(lastRoll = dice, consecutiveDoublesCount = 0)
+            val (finalState, jailEvents) = sendPlayerToJailAndEndTurn(stateWithRoll, playerId, JailReason.THREE_CONSECUTIVE_DOUBLES)
+            return EngineResult.Applied(finalState, events + jailEvents)
         }
 
         val (newPosition, passedGo) = movePosition(player.position, dice.total)
@@ -75,62 +73,7 @@ class RulesEngineImpl : RulesEngine {
 
     override fun resolveLanding(state: GameState): EngineResult {
         if (state.phase != TurnPhase.RESOLVING_LANDING) return EngineResult.Rejected(EngineError.WRONG_PHASE)
-        val player = state.activePlayer
-        val space = state.config.spacesByIndex.getValue(player.position)
-        val events = mutableListOf<GameEvent>()
-
-        return when (space.type) {
-            SpaceType.GO, SpaceType.FREE_PARKING, SpaceType.JAIL -> {
-                // GO: nothing further beyond the payment already applied in applyRoll.
-                // FREE_PARKING (§11): no jackpot, reward, or penalty in Version 1.
-                // JAIL landed on normally is "زيارة فقط" (visiting only, §12): no penalty.
-                events += GameEvent.LandingResolved(player.id, player.position)
-                EngineResult.Applied(
-                    state.copy(phase = TurnPhase.AWAITING_OPTIONAL_ACTIONS),
-                    events
-                )
-            }
-
-            SpaceType.TAX -> {
-                val amount = when (space.developerName) {
-                    "IncomeTax" -> state.config.constants.incomeTax
-                    "LuxuryTax" -> state.config.constants.luxuryTax
-                    else -> error("unrecognized tax space: ${space.developerName}")
-                }
-                check(player.balance >= amount) {
-                    "Session 7 will implement the bankruptcy path for a player who " +
-                            "can't cover a mandatory tax payment (GameRules.md §19)."
-                }
-                val paidPlayer = player.copy(balance = player.balance - amount)
-                events += GameEvent.TaxPaid(player.id, amount)
-                events += GameEvent.LandingResolved(player.id, player.position)
-                EngineResult.Applied(
-                    state.copy(
-                        players = state.players.replace(paidPlayer),
-                        phase = TurnPhase.AWAITING_OPTIONAL_ACTIONS
-                    ),
-                    events
-                )
-            }
-
-            SpaceType.GO_TO_JAIL -> {
-                // §6/§12: landing here sends the player directly to jail; no GO payment
-                // even though the conceptual route crosses index 0, and the turn ends
-                // immediately (no optional actions phase).
-                val jailSpace = state.config.spaces.first { it.type == SpaceType.JAIL }
-                val jailedPlayer = player.copy(position = jailSpace.index, inJail = true, jailTurnsUsed = 0)
-                events += GameEvent.SentToJail(player.id, JailReason.LANDED_ON_GO_TO_JAIL_SPACE)
-                val stateWithJailedPlayer = state.copy(players = state.players.replace(jailedPlayer))
-                val (finalState, turnEvents) = advanceToNextPlayer(stateWithJailedPlayer)
-                EngineResult.Applied(finalState, events + turnEvents)
-            }
-
-            SpaceType.PROPERTY, SpaceType.STATION, SpaceType.UTILITY ->
-                TODO("Session 2: purchase offer / rent resolution for ${space.developerName}")
-
-            SpaceType.CHANCE, SpaceType.COMMUNITY_CHEST ->
-                TODO("Session 2: card draw and effect resolution for ${space.developerName}")
-        }
+        return resolveSpaceAt(state)
     }
 
     override fun endTurn(state: GameState): EngineResult {
@@ -185,7 +128,313 @@ class RulesEngineImpl : RulesEngine {
     override fun jailAction(state: GameState, playerId: PlayerId, action: JailAction): EngineResult =
         TODO("Session 3: jail")
 
-    // --- Internal helpers ---
+    // --- Landing resolution (recursive: a card-forced move fully resolves its destination) ---
+
+    private fun resolveSpaceAt(state: GameState): EngineResult {
+        val player = state.activePlayer
+        val space = state.config.spacesByIndex.getValue(player.position)
+        val events = mutableListOf<GameEvent>()
+
+        return when (space.type) {
+            SpaceType.GO, SpaceType.FREE_PARKING, SpaceType.JAIL -> {
+                // GO: nothing further beyond the payment already applied on arrival.
+                // FREE_PARKING (§11): no jackpot, reward, or penalty in Version 1.
+                // JAIL landed on normally is "زيارة فقط" (visiting only, §12): no penalty.
+                events += GameEvent.LandingResolved(player.id, player.position)
+                EngineResult.Applied(state.copy(phase = TurnPhase.AWAITING_OPTIONAL_ACTIONS), events)
+            }
+
+            SpaceType.TAX -> {
+                val amount = taxAmountFor(state, space.developerName)
+                check(player.balance >= amount) {
+                    "Session 7 will implement the bankruptcy path for a player who " +
+                            "can't cover a mandatory tax payment (GameRules.md §19)."
+                }
+                val paidPlayer = player.copy(balance = player.balance - amount)
+                events += GameEvent.TaxPaid(player.id, amount)
+                events += GameEvent.LandingResolved(player.id, player.position)
+                EngineResult.Applied(
+                    state.copy(players = state.players.replace(paidPlayer), phase = TurnPhase.AWAITING_OPTIONAL_ACTIONS),
+                    events
+                )
+            }
+
+            SpaceType.GO_TO_JAIL -> {
+                // §6/§12: landing here sends the player directly to jail; no GO payment
+                // even though the conceptual route crosses index 0, and the turn ends
+                // immediately (no optional actions phase).
+                val (finalState, jailEvents) = sendPlayerToJailAndEndTurn(state, player.id, JailReason.LANDED_ON_GO_TO_JAIL_SPACE)
+                EngineResult.Applied(finalState, jailEvents)
+            }
+
+            SpaceType.PROPERTY, SpaceType.STATION, SpaceType.UTILITY ->
+                resolveOwnableLanding(state, player.id, space.assetId!!, events)
+
+            SpaceType.CHANCE, SpaceType.COMMUNITY_CHEST ->
+                resolveCardDraw(state, player.id, space.type)
+        }
+    }
+
+    /** Purchase offer (unowned), no-op (self-owned/mortgaged), or standard rent (§8). */
+    private fun resolveOwnableLanding(
+        state: GameState,
+        playerId: PlayerId,
+        assetId: AssetId,
+        events: MutableList<GameEvent>
+    ): EngineResult {
+        val player = state.player(playerId)
+        val asset = state.assets.getValue(assetId)
+
+        return when {
+            asset.ownerId == null -> {
+                events += GameEvent.PurchaseDecisionPending(playerId, assetId)
+                EngineResult.Applied(state.copy(phase = TurnPhase.AWAITING_PURCHASE_DECISION), events)
+            }
+
+            asset.ownerId == playerId || asset.mortgaged -> {
+                events += GameEvent.LandingResolved(playerId, player.position)
+                EngineResult.Applied(state.copy(phase = TurnPhase.AWAITING_OPTIONAL_ACTIONS), events)
+            }
+
+            else -> {
+                val diceTotal = state.lastRoll?.total ?: 0
+                val rent = RentCalculator.rentFor(state.config, state.assets, assetId, diceTotal)
+                val (updatedPlayers, paidEvent) = chargeRent(state, playerId, asset.ownerId, assetId, rent)
+                events += paidEvent
+                events += GameEvent.LandingResolved(playerId, player.position)
+                EngineResult.Applied(state.copy(players = updatedPlayers, phase = TurnPhase.AWAITING_OPTIONAL_ACTIONS), events)
+            }
+        }
+    }
+
+    private fun chargeRent(
+        state: GameState,
+        payerId: PlayerId,
+        ownerId: PlayerId,
+        assetId: AssetId,
+        rent: Int
+    ): Pair<List<PlayerState>, GameEvent.RentPaid> {
+        val payer = state.player(payerId)
+        check(payer.balance >= rent) {
+            "Session 7 will implement the bankruptcy path for a player who can't cover rent (GameRules.md §19)."
+        }
+        val owner = state.player(ownerId)
+        val updatedPlayers = state.players
+            .replace(payer.copy(balance = payer.balance - rent))
+            .replace(owner.copy(balance = owner.balance + rent))
+        return updatedPlayers to GameEvent.RentPaid(payerId, ownerId, assetId, rent)
+    }
+
+    private fun taxAmountFor(state: GameState, developerName: String): Int = when (developerName) {
+        "IncomeTax" -> state.config.constants.incomeTax
+        "LuxuryTax" -> state.config.constants.luxuryTax
+        else -> error("unrecognized tax space: $developerName")
+    }
+
+    // --- Card resolution (Cards.md) ---
+
+    private fun resolveCardDraw(state: GameState, playerId: PlayerId, deckSpaceType: SpaceType): EngineResult {
+        val isChance = deckSpaceType == SpaceType.CHANCE
+        val deckList = if (isChance) state.chanceDeck else state.chestDeck
+        check(deckList.isNotEmpty()) { "deck for $deckSpaceType is unexpectedly empty" }
+
+        val drawnId = deckList.first()
+        val card = state.config.cardsById.getValue(drawnId)
+        val events = mutableListOf<GameEvent>(GameEvent.CardDrawn(playerId, card.id, card.deck))
+
+        // Non-retained cards return to the bottom of their OWN deck (never merged,
+        // Cards.md §3 / GameRules.md §9). GetOutOfJailFree is retained by the player
+        // instead — removed from circulation until Session 3 (use) or Session 6
+        // (trade) returns it to this same deck's bottom.
+        val remaining = deckList.drop(1)
+        val newDeckList = if (card.effect == CardEffect.GetOutOfJailFree) remaining else remaining + card.id
+        val currentState = if (isChance) state.copy(chanceDeck = newDeckList) else state.copy(chestDeck = newDeckList)
+
+        val player = currentState.player(playerId)
+
+        return when (val effect = card.effect) {
+            is CardEffect.MoveToPosition -> {
+                val distance = forwardDistance(player.position, effect.target)
+                val (newPos, passedGo) = movePosition(player.position, distance)
+                val (movedState, moveEvents) = moveAndPayGo(currentState, playerId, newPos, passedGo)
+                mergeEvents(resolveSpaceAt(movedState), events + moveEvents)
+            }
+
+            is CardEffect.MoveRelative -> {
+                val (movedState, moveEvents) = if (effect.delta > 0) {
+                    val (newPos, passedGo) = movePosition(player.position, effect.delta)
+                    moveAndPayGo(currentState, playerId, newPos, passedGo)
+                } else {
+                    // Backward moves never collect GO, regardless of wrap (Cards.md §3).
+                    val newPos = ((player.position + effect.delta) % BOARD_SIZE + BOARD_SIZE) % BOARD_SIZE
+                    moveAndPayGo(currentState, playerId, newPos, passedGo = false)
+                }
+                mergeEvents(resolveSpaceAt(movedState), events + moveEvents)
+            }
+
+            is CardEffect.MoveToNearestStation -> {
+                val (targetIndex, passedGo) = advanceToNearestSpaceType(currentState, player.position, SpaceType.STATION)
+                resolveNearestAssetLanding(currentState, playerId, targetIndex, passedGo, events, rentMultiplier = effect.rentMultiplier, diceMultiplier = null)
+            }
+
+            is CardEffect.MoveToNearestUtility -> {
+                val (targetIndex, passedGo) = advanceToNearestSpaceType(currentState, player.position, SpaceType.UTILITY)
+                resolveNearestAssetLanding(currentState, playerId, targetIndex, passedGo, events, rentMultiplier = null, diceMultiplier = effect.multiplierOverride)
+            }
+
+            is CardEffect.CollectFromBank -> {
+                val paid = player.copy(balance = player.balance + effect.amount)
+                events += GameEvent.CardBankPayout(playerId, effect.amount)
+                events += GameEvent.LandingResolved(playerId, player.position)
+                EngineResult.Applied(currentState.copy(players = currentState.players.replace(paid), phase = TurnPhase.AWAITING_OPTIONAL_ACTIONS), events)
+            }
+
+            is CardEffect.PayToBank -> {
+                check(player.balance >= effect.amount) { BANKRUPTCY_TODO_MESSAGE }
+                val paid = player.copy(balance = player.balance - effect.amount)
+                events += GameEvent.CardBankCharge(playerId, effect.amount)
+                events += GameEvent.LandingResolved(playerId, player.position)
+                EngineResult.Applied(currentState.copy(players = currentState.players.replace(paid), phase = TurnPhase.AWAITING_OPTIONAL_ACTIONS), events)
+            }
+
+            is CardEffect.PayEachPlayer -> {
+                val others = currentState.nonBankruptPlayers.filter { it.id != playerId }
+                val total = effect.amount * others.size
+                check(player.balance >= total) { BANKRUPTCY_TODO_MESSAGE }
+
+                var updatedPlayers = currentState.players.replace(player.copy(balance = player.balance - total))
+                others.forEach { other ->
+                    val current = updatedPlayers.first { it.id == other.id }
+                    updatedPlayers = updatedPlayers.replace(current.copy(balance = current.balance + effect.amount))
+                    events += GameEvent.CardPlayerToPlayerPayment(playerId, other.id, effect.amount)
+                }
+                events += GameEvent.LandingResolved(playerId, player.position)
+                EngineResult.Applied(currentState.copy(players = updatedPlayers, phase = TurnPhase.AWAITING_OPTIONAL_ACTIONS), events)
+            }
+
+            is CardEffect.CollectFromEachPlayer -> {
+                val others = currentState.nonBankruptPlayers.filter { it.id != playerId }
+                others.forEach { other -> check(other.balance >= effect.amount) { BANKRUPTCY_TODO_MESSAGE } }
+
+                var updatedPlayers = currentState.players
+                others.forEach { other ->
+                    val current = updatedPlayers.first { it.id == other.id }
+                    updatedPlayers = updatedPlayers.replace(current.copy(balance = current.balance - effect.amount))
+                    events += GameEvent.CardPlayerToPlayerPayment(other.id, playerId, effect.amount)
+                }
+                val collector = updatedPlayers.first { it.id == playerId }
+                updatedPlayers = updatedPlayers.replace(collector.copy(balance = collector.balance + effect.amount * others.size))
+                events += GameEvent.LandingResolved(playerId, player.position)
+                EngineResult.Applied(currentState.copy(players = updatedPlayers, phase = TurnPhase.AWAITING_OPTIONAL_ACTIONS), events)
+            }
+
+            is CardEffect.PropertyRepairs -> {
+                val ownedAssets = currentState.assetsOwnedBy(playerId)
+                val houses = ownedAssets.sumOf { it.houses }
+                val hotels = ownedAssets.count { it.hasHotel }
+                val amount = effect.perHouse * houses + effect.perHotel * hotels
+                check(player.balance >= amount) { BANKRUPTCY_TODO_MESSAGE }
+                val paid = player.copy(balance = player.balance - amount)
+                events += GameEvent.CardBankCharge(playerId, amount)
+                events += GameEvent.LandingResolved(playerId, player.position)
+                EngineResult.Applied(currentState.copy(players = currentState.players.replace(paid), phase = TurnPhase.AWAITING_OPTIONAL_ACTIONS), events)
+            }
+
+            CardEffect.GoToJail -> {
+                // §6/Cards.md §3: never pays GO even though the conceptual route may cross it.
+                val (finalState, jailEvents) = sendPlayerToJailAndEndTurn(currentState, playerId, JailReason.CARD_EFFECT)
+                EngineResult.Applied(finalState, events + jailEvents)
+            }
+
+            CardEffect.GetOutOfJailFree -> {
+                val updated = player.copy(getOutOfJailCards = player.getOutOfJailCards + 1)
+                events += GameEvent.GetOutOfJailCardReceived(playerId)
+                events += GameEvent.LandingResolved(playerId, player.position)
+                EngineResult.Applied(currentState.copy(players = currentState.players.replace(updated), phase = TurnPhase.AWAITING_OPTIONAL_ACTIONS), events)
+            }
+        }
+    }
+
+    /**
+     * Handles the destination of a MoveToNearestStation/Utility card. Unowned,
+     * self-owned, and mortgaged destinations behave exactly like a normal landing
+     * (deferred to [resolveSpaceAt]). Owned-by-someone-else-and-not-mortgaged is the
+     * one case with a card-specific rent override (double the usual station rent, or
+     * a flat dice-multiplier for utilities) instead of the standard RentCalculator formula.
+     */
+    private fun resolveNearestAssetLanding(
+        state: GameState,
+        playerId: PlayerId,
+        targetIndex: Int,
+        passedGo: Boolean,
+        cardEvents: MutableList<GameEvent>,
+        rentMultiplier: Int?,
+        diceMultiplier: Int?
+    ): EngineResult {
+        val (movedState, moveEvents) = moveAndPayGo(state, playerId, targetIndex, passedGo)
+        val space = movedState.config.spacesByIndex.getValue(targetIndex)
+        val assetId = space.assetId!!
+        val asset = movedState.assets.getValue(assetId)
+
+        if (asset.ownerId == null || asset.ownerId == playerId || asset.mortgaged) {
+            return mergeEvents(resolveSpaceAt(movedState), cardEvents + moveEvents)
+        }
+
+        val diceTotal = movedState.lastRoll?.total ?: 0
+        val rent = when {
+            rentMultiplier != null -> RentCalculator.rentFor(movedState.config, movedState.assets, assetId, diceTotal) * rentMultiplier
+            diceMultiplier != null -> diceTotal * diceMultiplier
+            else -> error("resolveNearestAssetLanding requires exactly one rent override")
+        }
+
+        val (updatedPlayers, paidEvent) = chargeRent(movedState, playerId, asset.ownerId, assetId, rent)
+        val events = cardEvents + moveEvents + paidEvent + GameEvent.LandingResolved(playerId, targetIndex)
+        return EngineResult.Applied(movedState.copy(players = updatedPlayers, phase = TurnPhase.AWAITING_OPTIONAL_ACTIONS), events)
+    }
+
+    private fun mergeEvents(result: EngineResult, prefixEvents: List<GameEvent>): EngineResult = when (result) {
+        is EngineResult.Applied -> EngineResult.Applied(result.newState, prefixEvents + result.events)
+        is EngineResult.Rejected -> result
+    }
+
+    private fun moveAndPayGo(state: GameState, playerId: PlayerId, newPosition: Int, passedGo: Boolean): Pair<GameState, List<GameEvent>> {
+        val player = state.player(playerId)
+        var updated = player.copy(position = newPosition)
+        val events = mutableListOf<GameEvent>(GameEvent.PlayerMoved(playerId, player.position, newPosition, passedGo))
+        if (passedGo) {
+            updated = updated.copy(balance = updated.balance + state.config.constants.goReward)
+            events += GameEvent.GoCollected(playerId, state.config.constants.goReward)
+        }
+        return state.copy(players = state.players.replace(updated)) to events
+    }
+
+    /** Forward-only distance from [from] to [target], per the classic "advance to X" card convention. */
+    private fun forwardDistance(from: Int, target: Int): Int {
+        val distance = ((target - from) % BOARD_SIZE + BOARD_SIZE) % BOARD_SIZE
+        return if (distance == 0) BOARD_SIZE else distance
+    }
+
+    private fun advanceToNearestSpaceType(state: GameState, from: Int, type: SpaceType): Pair<Int, Boolean> {
+        for (offset in 1..BOARD_SIZE) {
+            val idx = (from + offset) % BOARD_SIZE
+            if (state.config.spacesByIndex.getValue(idx).type == type) {
+                return movePosition(from, offset)
+            }
+        }
+        error("no space of type $type exists on the board")
+    }
+
+    // --- Shared jail-entry / turn-advancement helpers ---
+
+    private fun sendPlayerToJailAndEndTurn(state: GameState, playerId: PlayerId, reason: JailReason): Pair<GameState, List<GameEvent>> {
+        val jailSpace = state.config.spaces.first { it.type == SpaceType.JAIL }
+        val player = state.player(playerId)
+        val jailedPlayer = player.copy(position = jailSpace.index, inJail = true, jailTurnsUsed = 0)
+        val events = mutableListOf<GameEvent>(GameEvent.SentToJail(playerId, reason))
+        val stateWithJailedPlayer = state.copy(players = state.players.replace(jailedPlayer))
+        val (finalState, turnEvents) = advanceToNextPlayer(stateWithJailedPlayer)
+        return finalState to (events + turnEvents)
+    }
 
     /**
      * Computes the destination of a forward move of [spaces] from [position] on the
@@ -205,8 +454,8 @@ class RulesEngineImpl : RulesEngine {
 
     /**
      * Forcibly ends the current turn without going through AWAITING_OPTIONAL_ACTIONS —
-     * used when a rule ends the turn immediately (3-consecutive-doubles or landing on
-     * GO_TO_JAIL, both per GameRules.md), as opposed to the player choosing to end it.
+     * used when a rule ends the turn immediately (3-consecutive-doubles, landing on
+     * GO_TO_JAIL, or a GoToJail card), as opposed to the player choosing to end it.
      * Advances to the next non-bankrupt player, resets per-turn doubles tracking, and
      * checks for a win per GameRules.md §20.
      */
@@ -239,6 +488,8 @@ class RulesEngineImpl : RulesEngine {
 
     private companion object {
         const val BOARD_SIZE = 40
+        const val BANKRUPTCY_TODO_MESSAGE =
+            "Session 7 will implement the bankruptcy path for a player who can't cover a mandatory card payment (GameRules.md §19)."
     }
 }
 
