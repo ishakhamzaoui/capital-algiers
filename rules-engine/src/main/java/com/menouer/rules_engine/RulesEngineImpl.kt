@@ -5,6 +5,7 @@ import com.menouer.economy_data.Deck
 import com.menouer.economy_data.SpaceType
 import com.menouer.rules_engine.dice.DiceRoll
 import com.menouer.rules_engine.model.AssetId
+import com.menouer.rules_engine.model.AssetState
 import com.menouer.rules_engine.model.EngineError
 import com.menouer.rules_engine.model.EngineResult
 import com.menouer.rules_engine.model.GameEvent
@@ -95,11 +96,99 @@ class RulesEngineImpl : RulesEngine {
     override fun placeBid(state: GameState, playerId: PlayerId, amount: Int): EngineResult =
         TODO("Session 8: auctions/purchase")
 
-    override fun build(state: GameState, playerId: PlayerId, assetId: AssetId): EngineResult =
-        TODO("Session 4: building")
+    override fun build(state: GameState, playerId: PlayerId, assetId: AssetId): EngineResult {
+        if (state.phase != TurnPhase.AWAITING_OPTIONAL_ACTIONS) return EngineResult.Rejected(EngineError.WRONG_PHASE)
+        if (playerId != state.activePlayerId) return EngineResult.Rejected(EngineError.NOT_ACTIVE_PLAYER)
 
-    override fun sellBuilding(state: GameState, playerId: PlayerId, assetId: AssetId): EngineResult =
-        TODO("Session 4: building")
+        val propertyConfig = state.config.propertiesById[assetId] ?: return EngineResult.Rejected(EngineError.ASSET_NOT_FOUND)
+        val asset = state.assets[assetId] ?: return EngineResult.Rejected(EngineError.ASSET_NOT_FOUND)
+        if (asset.ownerId != playerId) return EngineResult.Rejected(EngineError.ASSET_NOT_OWNED_BY_PLAYER)
+
+        val groupAssets = state.config.propertiesInGroup(propertyConfig.group).map { state.assets.getValue(it.id) }
+        if (groupAssets.any { it.ownerId != playerId }) return EngineResult.Rejected(EngineError.GROUP_NOT_COMPLETE)
+        if (groupAssets.any { it.mortgaged }) return EngineResult.Rejected(EngineError.GROUP_HAS_MORTGAGED_PROPERTY)
+
+        val currentLevel = buildingLevel(asset)
+        if (currentLevel >= HOTEL_LEVEL) return EngineResult.Rejected(EngineError.MAX_BUILDINGS_REACHED)
+
+        // Even-building (§13/§14): this property must not already be ahead of any
+        // sibling in the group — i.e. every other property must be at least at its level.
+        val evenOk = groupAssets.all { it.id == assetId || buildingLevel(it) >= currentLevel }
+        if (!evenOk) return EngineResult.Rejected(EngineError.UNEVEN_BUILDING)
+
+        val player = state.player(playerId)
+        val cost = propertyConfig.houseCost // BoardEconomy.md has one building-cost field; a hotel costs the same as a house.
+        if (player.balance < cost) return EngineResult.Rejected(EngineError.INSUFFICIENT_FUNDS)
+
+        return if (currentLevel < HOTEL_LEVEL - 1) {
+            if (state.bankHouses <= 0) return EngineResult.Rejected(EngineError.BUILDING_SUPPLY_EXHAUSTED)
+            val updatedAsset = asset.copy(houses = asset.houses + 1)
+            val updatedPlayer = player.copy(balance = player.balance - cost)
+            val newState = state.copy(
+                players = state.players.replace(updatedPlayer),
+                assets = state.assets + (assetId to updatedAsset),
+                bankHouses = state.bankHouses - 1
+            )
+            EngineResult.Applied(newState, listOf(GameEvent.HouseBuilt(playerId, assetId, updatedAsset.houses)))
+        } else {
+            // currentLevel == 4 (four houses): upgrading to a hotel returns the 4 houses to the bank.
+            if (state.bankHotels <= 0) return EngineResult.Rejected(EngineError.BUILDING_SUPPLY_EXHAUSTED)
+            val updatedAsset = asset.copy(houses = 0, hasHotel = true)
+            val updatedPlayer = player.copy(balance = player.balance - cost)
+            val newState = state.copy(
+                players = state.players.replace(updatedPlayer),
+                assets = state.assets + (assetId to updatedAsset),
+                bankHouses = state.bankHouses + 4,
+                bankHotels = state.bankHotels - 1
+            )
+            EngineResult.Applied(newState, listOf(GameEvent.HotelBuilt(playerId, assetId)))
+        }
+    }
+
+    override fun sellBuilding(state: GameState, playerId: PlayerId, assetId: AssetId): EngineResult {
+        if (state.phase != TurnPhase.AWAITING_OPTIONAL_ACTIONS) return EngineResult.Rejected(EngineError.WRONG_PHASE)
+        if (playerId != state.activePlayerId) return EngineResult.Rejected(EngineError.NOT_ACTIVE_PLAYER)
+
+        val propertyConfig = state.config.propertiesById[assetId] ?: return EngineResult.Rejected(EngineError.ASSET_NOT_FOUND)
+        val asset = state.assets[assetId] ?: return EngineResult.Rejected(EngineError.ASSET_NOT_FOUND)
+        if (asset.ownerId != playerId) return EngineResult.Rejected(EngineError.ASSET_NOT_OWNED_BY_PLAYER)
+
+        val currentLevel = buildingLevel(asset)
+        if (currentLevel <= 0) return EngineResult.Rejected(EngineError.NO_BUILDING_TO_SELL)
+
+        val groupAssets = state.config.propertiesInGroup(propertyConfig.group).map { state.assets.getValue(it.id) }
+        // Even-selling (§16): must sell from the property at (or above) the group's
+        // highest level first — this property must not already be behind a sibling.
+        val evenOk = groupAssets.all { buildingLevel(it) <= currentLevel }
+        if (!evenOk) return EngineResult.Rejected(EngineError.UNEVEN_BUILDING)
+
+        val player = state.player(playerId)
+        val refund = (propertyConfig.houseCost * state.config.constants.buildingResaleRate).toInt()
+
+        return if (currentLevel == HOTEL_LEVEL) {
+            // Selling a hotel converts it back to 4 houses (GameRules.md §16) rather than
+            // clearing the property outright — that conversion needs 4 houses in bank supply.
+            if (state.bankHouses < 4) return EngineResult.Rejected(EngineError.BUILDING_SUPPLY_EXHAUSTED)
+            val updatedAsset = asset.copy(houses = 4, hasHotel = false)
+            val updatedPlayer = player.copy(balance = player.balance + refund)
+            val newState = state.copy(
+                players = state.players.replace(updatedPlayer),
+                assets = state.assets + (assetId to updatedAsset),
+                bankHouses = state.bankHouses - 4,
+                bankHotels = state.bankHotels + 1
+            )
+            EngineResult.Applied(newState, listOf(GameEvent.HotelSold(playerId, assetId)))
+        } else {
+            val updatedAsset = asset.copy(houses = asset.houses - 1)
+            val updatedPlayer = player.copy(balance = player.balance + refund)
+            val newState = state.copy(
+                players = state.players.replace(updatedPlayer),
+                assets = state.assets + (assetId to updatedAsset),
+                bankHouses = state.bankHouses + 1
+            )
+            EngineResult.Applied(newState, listOf(GameEvent.HouseSold(playerId, assetId, updatedAsset.houses)))
+        }
+    }
 
     override fun mortgage(state: GameState, playerId: PlayerId, assetId: AssetId): EngineResult =
         TODO("Session 5: mortgages")
@@ -355,6 +444,10 @@ class RulesEngineImpl : RulesEngine {
         "LuxuryTax" -> state.config.constants.luxuryTax
         else -> error("unrecognized tax space: $developerName")
     }
+
+    /** 0..4 houses, or 5 meaning "has a hotel" — lets even-building be one rule at every tier. */
+    private fun buildingLevel(asset: AssetState): Int =
+        if (asset.hasHotel) HOTEL_LEVEL else asset.houses
 
     // --- Card resolution (Cards.md) ---
 
@@ -619,6 +712,7 @@ class RulesEngineImpl : RulesEngine {
 
     private companion object {
         const val BOARD_SIZE = 40
+        const val HOTEL_LEVEL = 5
         const val BANKRUPTCY_TODO_MESSAGE =
             "Session 7 will implement the bankruptcy path for a player who can't cover a mandatory card payment (GameRules.md §19)."
     }

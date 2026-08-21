@@ -62,6 +62,18 @@ sealed class GameEvent {
     /** Emitted only for the two roll-based exits (doubles-attempt success, forced turn 3) — never for PAY_FINE/USE_CARD. */
     data class ReleasedFromJail(val playerId: PlayerId, val method: JailReleaseMethod) : GameEvent()
 
+    /** GameRules.md §13. housesNow is the count on the property after this build. */
+    data class HouseBuilt(val playerId: PlayerId, val assetId: AssetId, val housesNow: Int) : GameEvent()
+
+    /** GameRules.md §14: the 4 houses on this property returned to the bank as part of the upgrade. */
+    data class HotelBuilt(val playerId: PlayerId, val assetId: AssetId) : GameEvent()
+
+    /** GameRules.md §16. housesNow is the count on the property after this sale. */
+    data class HouseSold(val playerId: PlayerId, val assetId: AssetId, val housesNow: Int) : GameEvent()
+
+    /** GameRules.md §16: converted back to 4 houses (drawn from bank supply), not removed entirely. */
+    data class HotelSold(val playerId: PlayerId, val assetId: AssetId) : GameEvent()
+
     /** Emitted when a double grants the same player a bonus roll instead of ending the turn (GameRules.md §5). */
     data class BonusRollGranted(val playerId: PlayerId) : GameEvent()
 

@@ -18,7 +18,8 @@ import com.menouer.rules_engine.model.TradeProposal
  * Session 2 (rent folded into resolveLanding),
  * Session 3 (jailAction, plus jail's doubles-attempt/forced-turn-3 handling
  * folded into applyRoll — see its doc),
- * Session 4 (build/sellBuilding),
+ * Session 4 (build/sellBuilding — houses, hotels, bank inventory limits, the
+ * even-building constraint, and the mortgage-blocks-building rule),
  * Session 5 (mortgage/unmortgage),
  * Session 6 (proposeTrade/resolveTrade),
  * Session 7 (bankruptcy, cross-cutting),
