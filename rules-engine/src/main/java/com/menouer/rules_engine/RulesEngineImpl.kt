@@ -190,11 +190,56 @@ class RulesEngineImpl : RulesEngine {
         }
     }
 
-    override fun mortgage(state: GameState, playerId: PlayerId, assetId: AssetId): EngineResult =
-        TODO("Session 5: mortgages")
+    override fun mortgage(state: GameState, playerId: PlayerId, assetId: AssetId): EngineResult {
+        if (state.phase != TurnPhase.AWAITING_OPTIONAL_ACTIONS) return EngineResult.Rejected(EngineError.WRONG_PHASE)
+        if (playerId != state.activePlayerId) return EngineResult.Rejected(EngineError.NOT_ACTIVE_PLAYER)
 
-    override fun unmortgage(state: GameState, playerId: PlayerId, assetId: AssetId): EngineResult =
-        TODO("Session 5: mortgages")
+        val mortgageValue = mortgageValueFor(state, assetId) ?: return EngineResult.Rejected(EngineError.ASSET_NOT_FOUND)
+        val asset = state.assets.getValue(assetId)
+        if (asset.ownerId != playerId) return EngineResult.Rejected(EngineError.ASSET_NOT_OWNED_BY_PLAYER)
+        if (asset.mortgaged) return EngineResult.Rejected(EngineError.ASSET_MORTGAGED)
+
+        // GameRules.md §18/§13: a developed property's buildings must be sold to the
+        // Bank before it can be mortgaged. Stations/utilities never carry buildings,
+        // so this check is a harmless no-op for them.
+        if (asset.houses > 0 || asset.hasHotel) return EngineResult.Rejected(EngineError.MUST_SELL_BUILDINGS_FIRST)
+
+        val player = state.player(playerId)
+        val updatedAsset = asset.copy(mortgaged = true)
+        val updatedPlayer = player.copy(balance = player.balance + mortgageValue)
+        val newState = state.copy(
+            players = state.players.replace(updatedPlayer),
+            assets = state.assets + (assetId to updatedAsset)
+        )
+        return EngineResult.Applied(newState, listOf(GameEvent.MortgagePlaced(playerId, assetId, mortgageValue)))
+    }
+
+    override fun unmortgage(state: GameState, playerId: PlayerId, assetId: AssetId): EngineResult {
+        if (state.phase != TurnPhase.AWAITING_OPTIONAL_ACTIONS) return EngineResult.Rejected(EngineError.WRONG_PHASE)
+        if (playerId != state.activePlayerId) return EngineResult.Rejected(EngineError.NOT_ACTIVE_PLAYER)
+
+        val mortgageValue = mortgageValueFor(state, assetId) ?: return EngineResult.Rejected(EngineError.ASSET_NOT_FOUND)
+        val asset = state.assets.getValue(assetId)
+        if (asset.ownerId != playerId) return EngineResult.Rejected(EngineError.ASSET_NOT_OWNED_BY_PLAYER)
+        if (!asset.mortgaged) return EngineResult.Rejected(EngineError.ASSET_NOT_MORTGAGED)
+
+        // GameRules.md §18: mortgage value plus 10% interest. Every mortgageValue in
+        // BoardEconomy.md is a multiple of 500, so integer division here is exact —
+        // no floating-point rounding involved.
+        val interest = mortgageValue / 10
+        val totalCost = mortgageValue + interest
+
+        val player = state.player(playerId)
+        if (player.balance < totalCost) return EngineResult.Rejected(EngineError.INSUFFICIENT_FUNDS)
+
+        val updatedAsset = asset.copy(mortgaged = false)
+        val updatedPlayer = player.copy(balance = player.balance - totalCost)
+        val newState = state.copy(
+            players = state.players.replace(updatedPlayer),
+            assets = state.assets + (assetId to updatedAsset)
+        )
+        return EngineResult.Applied(newState, listOf(GameEvent.MortgageLifted(playerId, assetId, totalCost)))
+    }
 
     override fun proposeTrade(state: GameState, trade: TradeProposal): EngineResult =
         TODO("Session 6: trading")
@@ -448,6 +493,14 @@ class RulesEngineImpl : RulesEngine {
     /** 0..4 houses, or 5 meaning "has a hotel" — lets even-building be one rule at every tier. */
     private fun buildingLevel(asset: AssetState): Int =
         if (asset.hasHotel) HOTEL_LEVEL else asset.houses
+
+    /** Looks up the configured mortgage value regardless of which of the three asset types this is. */
+    private fun mortgageValueFor(state: GameState, assetId: AssetId): Int? {
+        state.config.propertiesById[assetId]?.let { return it.mortgageValue }
+        state.config.stationsById[assetId]?.let { return it.mortgageValue }
+        state.config.utilitiesById[assetId]?.let { return it.mortgageValue }
+        return null
+    }
 
     // --- Card resolution (Cards.md) ---
 

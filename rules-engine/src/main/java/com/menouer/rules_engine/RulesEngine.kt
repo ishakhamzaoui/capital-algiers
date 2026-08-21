@@ -20,6 +20,8 @@ import com.menouer.rules_engine.model.TradeProposal
  * folded into applyRoll — see its doc),
  * Session 4 (build/sellBuilding — houses, hotels, bank inventory limits, the
  * even-building constraint, and the mortgage-blocks-building rule),
+ * Session 5 (mortgage/unmortgage — 50% value, 10% interest to lift, and the
+ * sell-buildings-first precondition),
  * Session 5 (mortgage/unmortgage),
  * Session 6 (proposeTrade/resolveTrade),
  * Session 7 (bankruptcy, cross-cutting),

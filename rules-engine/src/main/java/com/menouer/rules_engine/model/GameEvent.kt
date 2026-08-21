@@ -74,6 +74,12 @@ sealed class GameEvent {
     /** GameRules.md §16: converted back to 4 houses (drawn from bank supply), not removed entirely. */
     data class HotelSold(val playerId: PlayerId, val assetId: AssetId) : GameEvent()
 
+    /** GameRules.md §18. amount is the mortgage value received. */
+    data class MortgagePlaced(val playerId: PlayerId, val assetId: AssetId, val amount: Int) : GameEvent()
+
+    /** GameRules.md §18. amountPaid is mortgage value + 10% interest. */
+    data class MortgageLifted(val playerId: PlayerId, val assetId: AssetId, val amountPaid: Int) : GameEvent()
+
     /** Emitted when a double grants the same player a bonus roll instead of ending the turn (GameRules.md §5). */
     data class BonusRollGranted(val playerId: PlayerId) : GameEvent()
 
