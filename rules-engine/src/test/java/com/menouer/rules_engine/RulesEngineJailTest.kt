@@ -122,12 +122,12 @@ class RulesEngineJailTest {
     fun `rolling doubles on jail-turn 1 releases and moves the player, with no bonus roll even though it's a double`() {
         val state = jailedGame(jailTurnsUsed = 0)
 
-        val result = applied(engine.applyRoll(state, "p1", DiceRoll(3, 3))) // double
+        val result = applied(engine.applyRoll(state, "p1", DiceRoll(5, 5))) // double
         val p1 = result.newState.player("p1")
 
         assertFalse(p1.inJail)
         assertEquals(0, p1.jailTurnsUsed)
-        assertEquals(16, p1.position) // 10 -> 16 (Hussein Dey)
+        assertEquals(20, p1.position) // 10 -> 16 (Hussein Dey)
         assertEquals(TurnPhase.RESOLVING_LANDING, result.newState.phase)
         assertFalse(result.newState.pendingBonusRoll) // the critical rule: a jail-exit double never grants a bonus roll
         assertTrue(result.events.any { it is GameEvent.ReleasedFromJail && it.method == JailReleaseMethod.DOUBLES_ATTEMPT })
