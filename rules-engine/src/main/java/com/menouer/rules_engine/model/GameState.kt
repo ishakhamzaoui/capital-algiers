@@ -14,6 +14,14 @@ import com.menouer.rules_engine.dice.DiceRoll
  * [consecutiveDoublesCount] tracks doubles rolled so far *this turn*, for the
  * 3-consecutive-doubles-to-jail rule (GameRules.md §5). It resets to 0 at the
  * start of every turn.
+ *
+ * [pendingBonusRoll] is explicit rather than re-derived from lastRoll/isDouble
+ * at endTurn time: a jail-doubles-release roll or a forced jail-turn-3 roll
+ * can also be a double, but GameRules.md §12 is explicit that neither grants
+ * a bonus roll the way an ordinary in-turn double does (§5). Every code path
+ * that produces a roll sets this flag to exactly what it means, and endTurn
+ * simply reads it — that way "was this double special" is decided once, at
+ * the one place that knows the context, instead of being re-guessed later.
  */
 data class GameState(
     val stateVersion: Long = 0,
@@ -28,6 +36,7 @@ data class GameState(
     val chestDeck: List<String>,
     val consecutiveDoublesCount: Int = 0,
     val lastRoll: DiceRoll? = null,
+    val pendingBonusRoll: Boolean = false,
     val pendingAuction: AuctionState? = null,
     val pendingTrade: TradeState? = null
 ) {

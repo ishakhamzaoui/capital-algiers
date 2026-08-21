@@ -51,6 +51,17 @@ sealed class GameEvent {
 
     data class GetOutOfJailCardReceived(val playerId: PlayerId) : GameEvent()
 
+    /** GameRules.md §12: a failed doubles-attempt on jail-turn 1 or 2 — no movement, turn ends. */
+    data class JailRollFailed(val playerId: PlayerId, val jailTurnsUsedNow: Int) : GameEvent()
+
+    /** Covers both a voluntary early payment and the automatic forced jail-turn-3 deduction. */
+    data class JailFinePaid(val playerId: PlayerId, val amount: Int, val forced: Boolean) : GameEvent()
+
+    data class GetOutOfJailCardUsed(val playerId: PlayerId, val deck: com.menouer.economy_data.Deck) : GameEvent()
+
+    /** Emitted only for the two roll-based exits (doubles-attempt success, forced turn 3) — never for PAY_FINE/USE_CARD. */
+    data class ReleasedFromJail(val playerId: PlayerId, val method: JailReleaseMethod) : GameEvent()
+
     /** Emitted when a double grants the same player a bonus roll instead of ending the turn (GameRules.md §5). */
     data class BonusRollGranted(val playerId: PlayerId) : GameEvent()
 
@@ -63,4 +74,9 @@ enum class JailReason {
     LANDED_ON_GO_TO_JAIL_SPACE,
     THREE_CONSECUTIVE_DOUBLES,
     CARD_EFFECT
+}
+
+enum class JailReleaseMethod {
+    DOUBLES_ATTEMPT,
+    FORCED_TURN_THREE
 }

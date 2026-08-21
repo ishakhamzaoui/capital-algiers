@@ -16,7 +16,8 @@ import com.menouer.rules_engine.model.TradeProposal
  * Method bodies are implemented incrementally across the M1 sessions:
  * Session 1 (applyRoll/resolveLanding/endTurn — turn flow, movement, GO),
  * Session 2 (rent folded into resolveLanding),
- * Session 3 (jailAction),
+ * Session 3 (jailAction, plus jail's doubles-attempt/forced-turn-3 handling
+ * folded into applyRoll — see its doc),
  * Session 4 (build/sellBuilding),
  * Session 5 (mortgage/unmortgage),
  * Session 6 (proposeTrade/resolveTrade),
@@ -45,9 +46,15 @@ interface RulesEngine {
     fun endTurn(state: GameState): EngineResult
 }
 
-/** The three ways a jailed player may attempt to leave, per GameRules.md §12. */
+/**
+ * The two ways a jailed player may voluntarily leave before rolling, per
+ * GameRules.md §12. "Attempting doubles" is deliberately NOT a third value
+ * here — it's just a normal RollDiceRequest/applyRoll call made while the
+ * player is in jail; applyRoll itself dispatches on GameState.phase
+ * (AWAITING_JAIL_DECISION vs AWAITING_ROLL) rather than needing a second
+ * dice-carrying entrypoint through this method.
+ */
 enum class JailAction {
     PAY_FINE,
-    USE_GET_OUT_OF_JAIL_CARD,
-    ATTEMPT_DOUBLES
+    USE_GET_OUT_OF_JAIL_CARD
 }

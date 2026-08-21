@@ -185,7 +185,7 @@ class RulesEngineLandingAndCardsTest {
 
         val result = applied(engine.resolveLanding(state))
 
-        assertEquals(1, result.newState.player("p1").getOutOfJailCards)
+        assertEquals(1, result.newState.player("p1").getOutOfJailCards.size)
         assertEquals(originalSize - 1, result.newState.chanceDeck.size) // not returned to the deck
         assertTrue(result.events.any { it is GameEvent.GetOutOfJailCardReceived })
     }

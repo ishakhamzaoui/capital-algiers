@@ -1,5 +1,7 @@
 package com.menouer.rules_engine.model
 
+import com.menouer.economy_data.Deck
+
 typealias PlayerId = String
 typealias AssetId = String
 
@@ -11,6 +13,12 @@ typealias AssetId = String
  * jail state machine in TechnicalSpecification.md §5 / GameRules.md §12
  * Addendum A2. It reaches 2 right before the forced turn-3 roll.
  *
+ * [getOutOfJailCards] tags each retained card with the [Deck] it was drawn
+ * from (not just a count): Cards.md §3 requires a used/traded card to return
+ * to the bottom of its OWN deck specifically, and each deck holds exactly one
+ * such card, so remembering the deck is enough to identify which physical
+ * card it was.
+ *
  * There is deliberately no `ownedAssets` field here: ownership lives solely on
  * [AssetState.ownerId], so there's exactly one place that can go stale. Use
  * GameState.assetsOwnedBy(playerId) to look up what a player owns.
@@ -21,7 +29,7 @@ data class PlayerState(
     val position: Int,
     val inJail: Boolean = false,
     val jailTurnsUsed: Int = 0,
-    val getOutOfJailCards: Int = 0,
+    val getOutOfJailCards: List<Deck> = emptyList(),
     val bankrupt: Boolean = false
 )
 

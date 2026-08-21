@@ -1,6 +1,7 @@
 package com.menouer.rules_engine
 
 import com.menouer.economy_data.CardEffect
+import com.menouer.economy_data.Deck
 import com.menouer.economy_data.SpaceType
 import com.menouer.rules_engine.dice.DiceRoll
 import com.menouer.rules_engine.model.AssetId
@@ -9,66 +10,45 @@ import com.menouer.rules_engine.model.EngineResult
 import com.menouer.rules_engine.model.GameEvent
 import com.menouer.rules_engine.model.GameState
 import com.menouer.rules_engine.model.JailReason
+import com.menouer.rules_engine.model.JailReleaseMethod
 import com.menouer.rules_engine.model.PlayerId
 import com.menouer.rules_engine.model.PlayerState
 import com.menouer.rules_engine.model.TradeProposal
 import com.menouer.rules_engine.model.TurnPhase
 
 /**
- * Session 1 implemented: applyRoll, endTurn, and the parts of landing
- * resolution that don't depend on rent/ownership (TAX, FREE_PARKING,
- * JAIL-visiting, GO_TO_JAIL).
+ * Session 1 implemented: applyRoll (normal path), endTurn, and the parts of
+ * landing resolution that don't depend on rent/ownership.
  *
- * Session 2 (this pass) adds: PROPERTY/STATION/UTILITY landing (purchase
- * offer via AWAITING_PURCHASE_DECISION, or rent via RentCalculator), and
- * full Chance/Community Chest card resolution — folded into this session
- * rather than a separate one because two card effects (advance-to-nearest-
- * station/utility) need rent math, and several cards can chain into a
- * second landing (another card, a tax, a jail-send) that also needs this
- * session's machinery. Landing resolution is therefore recursive: a card
- * that moves the player fully resolves wherever they end up, exactly as if
- * they'd landed there via a normal roll.
+ * Session 2 added: PROPERTY/STATION/UTILITY landing (purchase offer or rent),
+ * and full Chance/Community Chest card resolution, recursively resolving
+ * wherever a card-forced move lands.
  *
- * Auctions/purchase decisions (buyAsset/declinePurchase/placeBid), building,
- * mortgages, trading, and jail actions remain TODO stubs for their own
- * sessions (see RulesEngine.kt's class doc).
+ * Session 3 (this pass) adds jail: jailAction for the two voluntary exits
+ * (PAY_FINE, USE_GET_OUT_OF_JAIL_CARD), and — folded into applyRoll rather
+ * than jailAction, see RulesEngine.kt's JailAction doc — the doubles-attempt
+ * roll (jail-turns 1/2) and the forced jail-turn-3 roll (Addendum A2). A
+ * roll-based jail exit never grants a bonus roll even if it's a double
+ * (GameRules.md §12); this is expressed via GameState.pendingBonusRoll,
+ * which every roll-producing path sets explicitly rather than endTurn
+ * re-deriving "was that double special" from lastRoll alone.
+ *
+ * Building, mortgages, trading, auctions/purchase decisions, and full
+ * bankruptcy remain TODO stubs for their own sessions (see RulesEngine.kt's
+ * class doc).
  */
 class RulesEngineImpl : RulesEngine {
 
     override fun applyRoll(state: GameState, playerId: PlayerId, dice: DiceRoll): EngineResult {
-        if (state.phase != TurnPhase.AWAITING_ROLL) return EngineResult.Rejected(EngineError.WRONG_PHASE)
         if (playerId != state.activePlayerId) return EngineResult.Rejected(EngineError.NOT_ACTIVE_PLAYER)
         val player = state.playerOrNull(playerId) ?: return EngineResult.Rejected(EngineError.PLAYER_NOT_FOUND)
         if (player.bankrupt) return EngineResult.Rejected(EngineError.PLAYER_BANKRUPT)
 
-        val events = mutableListOf<GameEvent>(GameEvent.DiceRolled(playerId, dice))
-        val doublesCount = if (dice.isDouble) state.consecutiveDoublesCount + 1 else state.consecutiveDoublesCount
-
-        if (dice.isDouble && doublesCount == 3) {
-            // GameRules.md §5: on the 3rd consecutive double, the player does NOT make
-            // the movement associated with that roll — they go directly to jail, the
-            // turn ends immediately, and no GO payment occurs regardless of route.
-            val stateWithRoll = state.copy(lastRoll = dice, consecutiveDoublesCount = 0)
-            val (finalState, jailEvents) = sendPlayerToJailAndEndTurn(stateWithRoll, playerId, JailReason.THREE_CONSECUTIVE_DOUBLES)
-            return EngineResult.Applied(finalState, events + jailEvents)
+        return when (state.phase) {
+            TurnPhase.AWAITING_ROLL -> applyNormalRoll(state, player, dice)
+            TurnPhase.AWAITING_JAIL_DECISION -> applyJailRoll(state, player, dice)
+            else -> EngineResult.Rejected(EngineError.WRONG_PHASE)
         }
-
-        val (newPosition, passedGo) = movePosition(player.position, dice.total)
-        var movedPlayer = player.copy(position = newPosition)
-        events += GameEvent.PlayerMoved(playerId, player.position, newPosition, passedGo)
-
-        if (passedGo) {
-            movedPlayer = movedPlayer.copy(balance = movedPlayer.balance + state.config.constants.goReward)
-            events += GameEvent.GoCollected(playerId, state.config.constants.goReward)
-        }
-
-        val newState = state.copy(
-            players = state.players.replace(movedPlayer),
-            phase = TurnPhase.RESOLVING_LANDING,
-            lastRoll = dice,
-            consecutiveDoublesCount = doublesCount
-        )
-        return EngineResult.Applied(newState, events)
     }
 
     override fun resolveLanding(state: GameState): EngineResult {
@@ -79,21 +59,29 @@ class RulesEngineImpl : RulesEngine {
     override fun endTurn(state: GameState): EngineResult {
         if (state.phase != TurnPhase.AWAITING_OPTIONAL_ACTIONS) return EngineResult.Rejected(EngineError.WRONG_PHASE)
 
-        val lastRoll = state.lastRoll
-        val grantsBonusRoll = lastRoll != null && lastRoll.isDouble && state.consecutiveDoublesCount < 3
-        if (grantsBonusRoll) {
+        if (state.pendingBonusRoll) {
             // GameRules.md §4 step 9 / §5: a valid double grants another roll to the
-            // SAME player once the landed space is fully resolved. This does not
-            // advance activePlayerId and does not reset consecutiveDoublesCount, since
-            // that counter must keep tracking doubles across the whole turn.
+            // SAME player once the landed space is fully resolved.
             return EngineResult.Applied(
-                state.copy(phase = TurnPhase.AWAITING_ROLL),
+                state.copy(phase = TurnPhase.AWAITING_ROLL, pendingBonusRoll = false),
                 listOf(GameEvent.BonusRollGranted(state.activePlayerId))
             )
         }
 
         val (finalState, events) = advanceToNextPlayer(state)
         return EngineResult.Applied(finalState, events)
+    }
+
+    override fun jailAction(state: GameState, playerId: PlayerId, action: JailAction): EngineResult {
+        if (state.phase != TurnPhase.AWAITING_JAIL_DECISION) return EngineResult.Rejected(EngineError.WRONG_PHASE)
+        if (playerId != state.activePlayerId) return EngineResult.Rejected(EngineError.NOT_ACTIVE_PLAYER)
+        val player = state.playerOrNull(playerId) ?: return EngineResult.Rejected(EngineError.PLAYER_NOT_FOUND)
+        if (!player.inJail) return EngineResult.Rejected(EngineError.PLAYER_NOT_IN_JAIL)
+
+        return when (action) {
+            JailAction.PAY_FINE -> payFineVoluntarily(state, player)
+            JailAction.USE_GET_OUT_OF_JAIL_CARD -> useGetOutOfJailCard(state, player)
+        }
     }
 
     // --- Stubs for later sessions ---
@@ -125,8 +113,145 @@ class RulesEngineImpl : RulesEngine {
     override fun resolveTrade(state: GameState, accept: Boolean): EngineResult =
         TODO("Session 6: trading")
 
-    override fun jailAction(state: GameState, playerId: PlayerId, action: JailAction): EngineResult =
-        TODO("Session 3: jail")
+    // --- Normal (not-in-jail) roll ---
+
+    private fun applyNormalRoll(state: GameState, player: PlayerState, dice: DiceRoll): EngineResult {
+        val events = mutableListOf<GameEvent>(GameEvent.DiceRolled(player.id, dice))
+        val doublesCount = if (dice.isDouble) state.consecutiveDoublesCount + 1 else state.consecutiveDoublesCount
+
+        if (dice.isDouble && doublesCount == 3) {
+            // GameRules.md §5: on the 3rd consecutive double, the player does NOT make
+            // the movement associated with that roll — they go directly to jail, the
+            // turn ends immediately, and no GO payment occurs regardless of route.
+            val stateWithRoll = state.copy(lastRoll = dice, consecutiveDoublesCount = 0, pendingBonusRoll = false)
+            val (finalState, jailEvents) = sendPlayerToJailAndEndTurn(stateWithRoll, player.id, JailReason.THREE_CONSECUTIVE_DOUBLES)
+            return EngineResult.Applied(finalState, events + jailEvents)
+        }
+
+        val (newPosition, passedGo) = movePosition(player.position, dice.total)
+        var movedPlayer = player.copy(position = newPosition)
+        events += GameEvent.PlayerMoved(player.id, player.position, newPosition, passedGo)
+
+        if (passedGo) {
+            movedPlayer = movedPlayer.copy(balance = movedPlayer.balance + state.config.constants.goReward)
+            events += GameEvent.GoCollected(player.id, state.config.constants.goReward)
+        }
+
+        val newState = state.copy(
+            players = state.players.replace(movedPlayer),
+            phase = TurnPhase.RESOLVING_LANDING,
+            lastRoll = dice,
+            consecutiveDoublesCount = doublesCount,
+            pendingBonusRoll = dice.isDouble && doublesCount < 3
+        )
+        return EngineResult.Applied(newState, events)
+    }
+
+    // --- Jail: roll-based exits (doubles-attempt on turns 1/2, forced roll on turn 3) ---
+
+    private fun applyJailRoll(state: GameState, player: PlayerState, dice: DiceRoll): EngineResult {
+        val events = mutableListOf<GameEvent>(GameEvent.DiceRolled(player.id, dice))
+
+        if (player.jailTurnsUsed < 2) {
+            return if (dice.isDouble) {
+                releaseFromJailAndMove(state, player, dice, events, JailReleaseMethod.DOUBLES_ATTEMPT)
+            } else {
+                val updated = player.copy(jailTurnsUsed = player.jailTurnsUsed + 1)
+                events += GameEvent.JailRollFailed(player.id, updated.jailTurnsUsed)
+                val stateWithUpdate = state.copy(players = state.players.replace(updated), lastRoll = dice)
+                val (finalState, turnEvents) = advanceToNextPlayer(stateWithUpdate)
+                EngineResult.Applied(finalState, events + turnEvents)
+            }
+        }
+
+        // jailTurnsUsed == 2: forced jail-turn 3 (TechnicalSpecification.md §5 / GameRules.md §12).
+        // The fine is deducted automatically before movement, and this roll releases and
+        // moves the player regardless of doubles — no bonus roll either way.
+        val fine = state.config.constants.jailFine
+        check(player.balance >= fine) {
+            "Session 7 will implement the bankruptcy path for a player who can't cover " +
+                    "the forced jail-turn-3 fine (GameRules.md §12, using the fine as the triggering debt)."
+        }
+        val finedPlayer = player.copy(balance = player.balance - fine)
+        events += GameEvent.JailFinePaid(player.id, fine, forced = true)
+        val stateWithFine = state.copy(players = state.players.replace(finedPlayer))
+        return releaseFromJailAndMove(stateWithFine, finedPlayer, dice, events, JailReleaseMethod.FORCED_TURN_THREE)
+    }
+
+    private fun releaseFromJailAndMove(
+        state: GameState,
+        player: PlayerState,
+        dice: DiceRoll,
+        events: MutableList<GameEvent>,
+        method: JailReleaseMethod
+    ): EngineResult {
+        val released = player.copy(inJail = false, jailTurnsUsed = 0)
+        val (newPosition, passedGo) = movePosition(released.position, dice.total)
+        var movedPlayer = released.copy(position = newPosition)
+
+        events += GameEvent.ReleasedFromJail(player.id, method)
+        events += GameEvent.PlayerMoved(player.id, released.position, newPosition, passedGo)
+        if (passedGo) {
+            movedPlayer = movedPlayer.copy(balance = movedPlayer.balance + state.config.constants.goReward)
+            events += GameEvent.GoCollected(player.id, state.config.constants.goReward)
+        }
+
+        val finalState = state.copy(
+            players = state.players.replace(movedPlayer),
+            phase = TurnPhase.RESOLVING_LANDING,
+            lastRoll = dice,
+            consecutiveDoublesCount = 0,
+            pendingBonusRoll = false // GameRules.md §12: never a bonus roll on a jail-exit roll, double or not.
+        )
+        return EngineResult.Applied(finalState, events)
+    }
+
+    // --- Jail: voluntary exits before rolling ---
+
+    private fun payFineVoluntarily(state: GameState, player: PlayerState): EngineResult {
+        val fine = state.config.constants.jailFine
+        if (player.balance < fine) return EngineResult.Rejected(EngineError.INSUFFICIENT_FUNDS)
+
+        // Unlike the FORCED turn-3 fine, a voluntary payment the player can't afford is
+        // simply an invalid request (they can attempt doubles or use a card instead) —
+        // not a bankruptcy trigger.
+        val paid = player.copy(balance = player.balance - fine, inJail = false, jailTurnsUsed = 0)
+
+        // TechnicalSpecification.md §5: voluntary payment releases the player but grants
+        // a NORMAL subsequent roll this same turn — no movement happens as part of this
+        // action itself (unlike the doubles/forced-roll exits, which move as they release).
+        val newState = state.copy(players = state.players.replace(paid), phase = TurnPhase.AWAITING_ROLL)
+        return EngineResult.Applied(newState, listOf(GameEvent.JailFinePaid(player.id, fine, forced = false)))
+    }
+
+    private fun useGetOutOfJailCard(state: GameState, player: PlayerState): EngineResult {
+        val deckUsed = player.getOutOfJailCards.firstOrNull()
+            ?: return EngineResult.Rejected(EngineError.NO_GET_OUT_OF_JAIL_CARD)
+
+        val released = player.copy(
+            getOutOfJailCards = player.getOutOfJailCards.drop(1),
+            inJail = false,
+            jailTurnsUsed = 0
+        )
+
+        // Each deck has exactly one GetOutOfJailFree card (Cards.md), so the deck alone
+        // identifies which specific card id to return to that deck's bottom (Cards.md §3).
+        val cardId = deckSourceFor(state, deckUsed).first { it.effect == CardEffect.GetOutOfJailFree }.id
+        val stateWithCardReturned = if (deckUsed == Deck.CHANCE) {
+            state.copy(chanceDeck = state.chanceDeck + cardId)
+        } else {
+            state.copy(chestDeck = state.chestDeck + cardId)
+        }
+
+        val newState = stateWithCardReturned.copy(
+            players = stateWithCardReturned.players.replace(released),
+            phase = TurnPhase.AWAITING_ROLL
+        )
+        return EngineResult.Applied(newState, listOf(GameEvent.GetOutOfJailCardUsed(player.id, deckUsed)))
+    }
+
+    private fun deckSourceFor(state: GameState, deck: Deck) =
+        if (deck == Deck.CHANCE) state.config.chanceDeck else state.config.chestDeck
 
     // --- Landing resolution (recursive: a card-forced move fully resolves its destination) ---
 
@@ -244,7 +369,7 @@ class RulesEngineImpl : RulesEngine {
 
         // Non-retained cards return to the bottom of their OWN deck (never merged,
         // Cards.md §3 / GameRules.md §9). GetOutOfJailFree is retained by the player
-        // instead — removed from circulation until Session 3 (use) or Session 6
+        // instead — removed from circulation until jailAction (use) or Session 6
         // (trade) returns it to this same deck's bottom.
         val remaining = deckList.drop(1)
         val newDeckList = if (card.effect == CardEffect.GetOutOfJailFree) remaining else remaining + card.id
@@ -347,7 +472,7 @@ class RulesEngineImpl : RulesEngine {
             }
 
             CardEffect.GetOutOfJailFree -> {
-                val updated = player.copy(getOutOfJailCards = player.getOutOfJailCards + 1)
+                val updated = player.copy(getOutOfJailCards = player.getOutOfJailCards + card.deck)
                 events += GameEvent.GetOutOfJailCardReceived(playerId)
                 events += GameEvent.LandingResolved(playerId, player.position)
                 EngineResult.Applied(currentState.copy(players = currentState.players.replace(updated), phase = TurnPhase.AWAITING_OPTIONAL_ACTIONS), events)
@@ -456,13 +581,18 @@ class RulesEngineImpl : RulesEngine {
      * Forcibly ends the current turn without going through AWAITING_OPTIONAL_ACTIONS —
      * used when a rule ends the turn immediately (3-consecutive-doubles, landing on
      * GO_TO_JAIL, or a GoToJail card), as opposed to the player choosing to end it.
-     * Advances to the next non-bankrupt player, resets per-turn doubles tracking, and
-     * checks for a win per GameRules.md §20.
+     * Advances to the next non-bankrupt player, resets per-turn doubles/bonus-roll
+     * tracking, and checks for a win per GameRules.md §20.
      */
     internal fun advanceToNextPlayer(state: GameState): Pair<GameState, List<GameEvent>> {
         val nonBankrupt = state.nonBankruptPlayers
         if (nonBankrupt.size <= 1) {
-            val winnerState = state.copy(phase = TurnPhase.GAME_OVER, lastRoll = null, consecutiveDoublesCount = 0)
+            val winnerState = state.copy(
+                phase = TurnPhase.GAME_OVER,
+                lastRoll = null,
+                consecutiveDoublesCount = 0,
+                pendingBonusRoll = false
+            )
             return winnerState to listOf(GameEvent.GameEnded)
         }
 
@@ -481,7 +611,8 @@ class RulesEngineImpl : RulesEngine {
             activePlayerId = nextPlayer.id,
             phase = nextPhase,
             lastRoll = null,
-            consecutiveDoublesCount = 0
+            consecutiveDoublesCount = 0,
+            pendingBonusRoll = false
         )
         return newState to listOf(GameEvent.TurnChanged(nextPlayer.id))
     }
