@@ -84,6 +84,13 @@ sealed class GameEvent {
 
     data class TradeResolved(val fromPlayerId: PlayerId, val toPlayerId: PlayerId, val accepted: Boolean) : GameEvent()
 
+    /**
+     * GameRules.md §19. [creditorId] is null for a debt to the Bank. Emitted after
+     * liquidation (HouseSold/HotelSold/MortgagePlaced events) has already been
+     * emitted and still wasn't enough to cover the debt.
+     */
+    data class PlayerBankrupted(val playerId: PlayerId, val creditorId: PlayerId?) : GameEvent()
+
     /** Emitted when a double grants the same player a bonus roll instead of ending the turn (GameRules.md §5). */
     data class BonusRollGranted(val playerId: PlayerId) : GameEvent()
 

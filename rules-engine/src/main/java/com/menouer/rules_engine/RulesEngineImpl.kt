@@ -340,14 +340,15 @@ class RulesEngineImpl : RulesEngine {
         // The fine is deducted automatically before movement, and this roll releases and
         // moves the player regardless of doubles — no bonus roll either way.
         val fine = state.config.constants.jailFine
-        check(player.balance >= fine) {
-            "Session 7 will implement the bankruptcy path for a player who can't cover " +
-                    "the forced jail-turn-3 fine (GameRules.md §12, using the fine as the triggering debt)."
+        val (settledState, debtEvents) = settleDebt(state, player.id, creditorId = null, fine)
+        if (settledState.player(player.id).bankrupt) {
+            events += debtEvents
+            val (finalState, turnEvents) = advanceToNextPlayer(settledState)
+            return EngineResult.Applied(finalState, events + turnEvents)
         }
-        val finedPlayer = player.copy(balance = player.balance - fine)
         events += GameEvent.JailFinePaid(player.id, fine, forced = true)
-        val stateWithFine = state.copy(players = state.players.replace(finedPlayer))
-        return releaseFromJailAndMove(stateWithFine, finedPlayer, dice, events, JailReleaseMethod.FORCED_TURN_THREE)
+        events += debtEvents
+        return releaseFromJailAndMove(settledState, settledState.player(player.id), dice, events, JailReleaseMethod.FORCED_TURN_THREE)
     }
 
     private fun releaseFromJailAndMove(
@@ -443,17 +444,17 @@ class RulesEngineImpl : RulesEngine {
 
             SpaceType.TAX -> {
                 val amount = taxAmountFor(state, space.developerName)
-                check(player.balance >= amount) {
-                    "Session 7 will implement the bankruptcy path for a player who " +
-                            "can't cover a mandatory tax payment (GameRules.md §19)."
+                val (settledState, debtEvents) = settleDebt(state, player.id, creditorId = null, amount)
+                if (settledState.player(player.id).bankrupt) {
+                    events += debtEvents
+                    val (finalState, turnEvents) = advanceToNextPlayer(settledState)
+                    EngineResult.Applied(finalState, events + turnEvents)
+                } else {
+                    events += GameEvent.TaxPaid(player.id, amount)
+                    events += debtEvents
+                    events += GameEvent.LandingResolved(player.id, player.position)
+                    EngineResult.Applied(settledState.copy(phase = TurnPhase.AWAITING_OPTIONAL_ACTIONS), events)
                 }
-                val paidPlayer = player.copy(balance = player.balance - amount)
-                events += GameEvent.TaxPaid(player.id, amount)
-                events += GameEvent.LandingResolved(player.id, player.position)
-                EngineResult.Applied(
-                    state.copy(players = state.players.replace(paidPlayer), phase = TurnPhase.AWAITING_OPTIONAL_ACTIONS),
-                    events
-                )
             }
 
             SpaceType.GO_TO_JAIL -> {
@@ -496,30 +497,19 @@ class RulesEngineImpl : RulesEngine {
             else -> {
                 val diceTotal = state.lastRoll?.total ?: 0
                 val rent = RentCalculator.rentFor(state.config, state.assets, assetId, diceTotal)
-                val (updatedPlayers, paidEvent) = chargeRent(state, playerId, asset.ownerId, assetId, rent)
-                events += paidEvent
-                events += GameEvent.LandingResolved(playerId, player.position)
-                EngineResult.Applied(state.copy(players = updatedPlayers, phase = TurnPhase.AWAITING_OPTIONAL_ACTIONS), events)
+                val (settledState, debtEvents) = settleDebt(state, playerId, asset.ownerId, rent)
+                if (settledState.player(playerId).bankrupt) {
+                    events += debtEvents
+                    val (finalState, turnEvents) = advanceToNextPlayer(settledState)
+                    EngineResult.Applied(finalState, events + turnEvents)
+                } else {
+                    events += GameEvent.RentPaid(playerId, asset.ownerId, assetId, rent)
+                    events += debtEvents
+                    events += GameEvent.LandingResolved(playerId, player.position)
+                    EngineResult.Applied(settledState.copy(phase = TurnPhase.AWAITING_OPTIONAL_ACTIONS), events)
+                }
             }
         }
-    }
-
-    private fun chargeRent(
-        state: GameState,
-        payerId: PlayerId,
-        ownerId: PlayerId,
-        assetId: AssetId,
-        rent: Int
-    ): Pair<List<PlayerState>, GameEvent.RentPaid> {
-        val payer = state.player(payerId)
-        check(payer.balance >= rent) {
-            "Session 7 will implement the bankruptcy path for a player who can't cover rent (GameRules.md §19)."
-        }
-        val owner = state.player(ownerId)
-        val updatedPlayers = state.players
-            .replace(payer.copy(balance = payer.balance - rent))
-            .replace(owner.copy(balance = owner.balance + rent))
-        return updatedPlayers to GameEvent.RentPaid(payerId, ownerId, assetId, rent)
     }
 
     private fun taxAmountFor(state: GameState, developerName: String): Int = when (developerName) {
@@ -676,42 +666,61 @@ class RulesEngineImpl : RulesEngine {
             }
 
             is CardEffect.PayToBank -> {
-                check(player.balance >= effect.amount) { BANKRUPTCY_TODO_MESSAGE }
-                val paid = player.copy(balance = player.balance - effect.amount)
-                events += GameEvent.CardBankCharge(playerId, effect.amount)
-                events += GameEvent.LandingResolved(playerId, player.position)
-                EngineResult.Applied(currentState.copy(players = currentState.players.replace(paid), phase = TurnPhase.AWAITING_OPTIONAL_ACTIONS), events)
+                val (settledState, debtEvents) = settleDebt(currentState, playerId, creditorId = null, effect.amount)
+                if (settledState.player(playerId).bankrupt) {
+                    val (finalState, turnEvents) = advanceToNextPlayer(settledState)
+                    EngineResult.Applied(finalState, events + debtEvents + turnEvents)
+                } else {
+                    events += GameEvent.CardBankCharge(playerId, effect.amount)
+                    events += debtEvents
+                    events += GameEvent.LandingResolved(playerId, player.position)
+                    EngineResult.Applied(settledState.copy(phase = TurnPhase.AWAITING_OPTIONAL_ACTIONS), events)
+                }
             }
 
             is CardEffect.PayEachPlayer -> {
                 val others = currentState.nonBankruptPlayers.filter { it.id != playerId }
-                val total = effect.amount * others.size
-                check(player.balance >= total) { BANKRUPTCY_TODO_MESSAGE }
+                var workingState = currentState
+                var payerWentBankrupt = false
 
-                var updatedPlayers = currentState.players.replace(player.copy(balance = player.balance - total))
-                others.forEach { other ->
-                    val current = updatedPlayers.first { it.id == other.id }
-                    updatedPlayers = updatedPlayers.replace(current.copy(balance = current.balance + effect.amount))
+                for (other in others) {
+                    val (settledState, debtEvents) = settleDebt(workingState, playerId, other.id, effect.amount)
+                    workingState = settledState
+                    events += debtEvents
+                    if (workingState.player(playerId).bankrupt) {
+                        payerWentBankrupt = true
+                        break
+                    }
                     events += GameEvent.CardPlayerToPlayerPayment(playerId, other.id, effect.amount)
                 }
-                events += GameEvent.LandingResolved(playerId, player.position)
-                EngineResult.Applied(currentState.copy(players = updatedPlayers, phase = TurnPhase.AWAITING_OPTIONAL_ACTIONS), events)
+
+                if (payerWentBankrupt) {
+                    val (finalState, turnEvents) = advanceToNextPlayer(workingState)
+                    EngineResult.Applied(finalState, events + turnEvents)
+                } else {
+                    events += GameEvent.LandingResolved(playerId, player.position)
+                    EngineResult.Applied(workingState.copy(phase = TurnPhase.AWAITING_OPTIONAL_ACTIONS), events)
+                }
             }
 
             is CardEffect.CollectFromEachPlayer -> {
                 val others = currentState.nonBankruptPlayers.filter { it.id != playerId }
-                others.forEach { other -> check(other.balance >= effect.amount) { BANKRUPTCY_TODO_MESSAGE } }
+                var workingState = currentState
 
-                var updatedPlayers = currentState.players
                 others.forEach { other ->
-                    val current = updatedPlayers.first { it.id == other.id }
-                    updatedPlayers = updatedPlayers.replace(current.copy(balance = current.balance - effect.amount))
-                    events += GameEvent.CardPlayerToPlayerPayment(other.id, playerId, effect.amount)
+                    val (settledState, debtEvents) = settleDebt(workingState, other.id, playerId, effect.amount)
+                    workingState = settledState
+                    events += debtEvents
+                    if (!workingState.player(other.id).bankrupt) {
+                        events += GameEvent.CardPlayerToPlayerPayment(other.id, playerId, effect.amount)
+                    }
+                    // If 'other' went bankrupt, settleDebt already routed their assets/cash
+                    // to playerId (the active player, as creditor) — nothing further needed.
                 }
-                val collector = updatedPlayers.first { it.id == playerId }
-                updatedPlayers = updatedPlayers.replace(collector.copy(balance = collector.balance + effect.amount * others.size))
+
                 events += GameEvent.LandingResolved(playerId, player.position)
-                EngineResult.Applied(currentState.copy(players = updatedPlayers, phase = TurnPhase.AWAITING_OPTIONAL_ACTIONS), events)
+                val (finalState, gameOverEvents) = checkForGameOver(workingState.copy(phase = TurnPhase.AWAITING_OPTIONAL_ACTIONS))
+                EngineResult.Applied(finalState, events + gameOverEvents)
             }
 
             is CardEffect.PropertyRepairs -> {
@@ -719,11 +728,17 @@ class RulesEngineImpl : RulesEngine {
                 val houses = ownedAssets.sumOf { it.houses }
                 val hotels = ownedAssets.count { it.hasHotel }
                 val amount = effect.perHouse * houses + effect.perHotel * hotels
-                check(player.balance >= amount) { BANKRUPTCY_TODO_MESSAGE }
-                val paid = player.copy(balance = player.balance - amount)
-                events += GameEvent.CardBankCharge(playerId, amount)
-                events += GameEvent.LandingResolved(playerId, player.position)
-                EngineResult.Applied(currentState.copy(players = currentState.players.replace(paid), phase = TurnPhase.AWAITING_OPTIONAL_ACTIONS), events)
+
+                val (settledState, debtEvents) = settleDebt(currentState, playerId, creditorId = null, amount)
+                if (settledState.player(playerId).bankrupt) {
+                    val (finalState, turnEvents) = advanceToNextPlayer(settledState)
+                    EngineResult.Applied(finalState, events + debtEvents + turnEvents)
+                } else {
+                    events += GameEvent.CardBankCharge(playerId, amount)
+                    events += debtEvents
+                    events += GameEvent.LandingResolved(playerId, player.position)
+                    EngineResult.Applied(settledState.copy(phase = TurnPhase.AWAITING_OPTIONAL_ACTIONS), events)
+                }
             }
 
             CardEffect.GoToJail -> {
@@ -773,9 +788,17 @@ class RulesEngineImpl : RulesEngine {
             else -> error("resolveNearestAssetLanding requires exactly one rent override")
         }
 
-        val (updatedPlayers, paidEvent) = chargeRent(movedState, playerId, asset.ownerId, assetId, rent)
-        val events = cardEvents + moveEvents + paidEvent + GameEvent.LandingResolved(playerId, targetIndex)
-        return EngineResult.Applied(movedState.copy(players = updatedPlayers, phase = TurnPhase.AWAITING_OPTIONAL_ACTIONS), events)
+        val (settledState, debtEvents) = settleDebt(movedState, playerId, asset.ownerId, rent)
+        return if (settledState.player(playerId).bankrupt) {
+            val (finalState, turnEvents) = advanceToNextPlayer(settledState)
+            EngineResult.Applied(finalState, cardEvents + moveEvents + debtEvents + turnEvents)
+        } else {
+            val events = cardEvents + moveEvents +
+                    GameEvent.RentPaid(playerId, asset.ownerId, assetId, rent) +
+                    debtEvents +
+                    GameEvent.LandingResolved(playerId, targetIndex)
+            EngineResult.Applied(settledState.copy(phase = TurnPhase.AWAITING_OPTIONAL_ACTIONS), events)
+        }
     }
 
     private fun mergeEvents(result: EngineResult, prefixEvents: List<GameEvent>): EngineResult = when (result) {
@@ -809,6 +832,173 @@ class RulesEngineImpl : RulesEngine {
         }
         error("no space of type $type exists on the board")
     }
+
+    // --- Bankruptcy (GameRules.md §19) ---
+
+    /**
+     * Settles a debt of [amount] from [debtorId] to [creditorId] (null = the Bank).
+     * If cash alone covers it, this is a simple transfer. If not, GameRules.md §19
+     * requires checking what can be raised from cash AND eligible assets before
+     * declaring bankruptcy — so this auto-liquidates (selling buildings, then
+     * mortgaging assets, ONE STEP AT A TIME, stopping the instant enough has been
+     * raised) and only declares bankruptcy if even fully liquidating everything
+     * still isn't enough. There is no "let the player choose what to sell first"
+     * step: since the engine is a pure function with no paused player-input point
+     * mid-payment, liquidation proceeds automatically — but it never sells or
+     * mortgages more than the debt actually requires.
+     *
+     * Callers must check `newState.player(debtorId).bankrupt` afterward — if true,
+     * the debtor's turn must end immediately (they can't take optional actions), by
+     * calling advanceToNextPlayer rather than proceeding normally.
+     */
+    private fun settleDebt(state: GameState, debtorId: PlayerId, creditorId: PlayerId?, amount: Int): Pair<GameState, List<GameEvent>> {
+        if (amount <= 0) return state to emptyList()
+
+        val debtor = state.player(debtorId)
+        if (debtor.balance >= amount) {
+            return transferCash(state, debtorId, creditorId, amount) to emptyList()
+        }
+
+        val (liquidatedState, liquidationEvents, covered) = liquidateUntilCovered(state, debtorId, amount)
+        return if (covered) {
+            transferCash(liquidatedState, debtorId, creditorId, amount) to liquidationEvents
+        } else {
+            declareBankruptcy(liquidatedState, debtorId, creditorId, liquidationEvents)
+        }
+    }
+
+    private fun transferCash(state: GameState, fromId: PlayerId, toId: PlayerId?, amount: Int): GameState {
+        val from = state.player(fromId)
+        var newState = state.copy(players = state.players.replace(from.copy(balance = from.balance - amount)))
+        if (toId != null) {
+            val to = newState.player(toId)
+            newState = newState.copy(players = newState.players.replace(to.copy(balance = to.balance + amount)))
+        }
+        return newState
+    }
+
+    /**
+     * Sells this player's buildings (hotels convert to 4 houses first, at 50% of
+     * houseCost per GameRules.md §16, then those houses sell too) and mortgages
+     * their unmortgaged assets (GameRules.md §18) — one building or one mortgage at
+     * a time, stopping the moment their balance reaches [amount]. This is NOT the
+     * same code path as the player-initiated build/sellBuilding/mortgage methods:
+     * those enforce even-selling order for player choice, which doesn't apply here
+     * since this is an automatic, last-resort raise rather than a player decision.
+     */
+    private fun liquidateUntilCovered(state: GameState, playerId: PlayerId, amount: Int): Triple<GameState, List<GameEvent>, Boolean> {
+        var currentState = state
+        val events = mutableListOf<GameEvent>()
+        fun covered() = currentState.player(playerId).balance >= amount
+
+        for (propertyConfig in currentState.assetsOwnedBy(playerId).mapNotNull { currentState.config.propertiesById[it.id] }) {
+            if (covered()) break
+            var asset = currentState.assets.getValue(propertyConfig.id)
+            val refund = (propertyConfig.houseCost * currentState.config.constants.buildingResaleRate).toInt()
+
+            if (asset.hasHotel) {
+                val player = currentState.player(playerId)
+                currentState = currentState.copy(
+                    players = currentState.players.replace(player.copy(balance = player.balance + refund)),
+                    assets = currentState.assets + (propertyConfig.id to asset.copy(hasHotel = false, houses = 4)),
+                    bankHouses = currentState.bankHouses - 4,
+                    bankHotels = currentState.bankHotels + 1
+                )
+                events += GameEvent.HotelSold(playerId, propertyConfig.id)
+                asset = currentState.assets.getValue(propertyConfig.id)
+            }
+
+            while (asset.houses > 0 && !covered()) {
+                val player = currentState.player(playerId)
+                val updatedAsset = asset.copy(houses = asset.houses - 1)
+                currentState = currentState.copy(
+                    players = currentState.players.replace(player.copy(balance = player.balance + refund)),
+                    assets = currentState.assets + (propertyConfig.id to updatedAsset),
+                    bankHouses = currentState.bankHouses + 1
+                )
+                events += GameEvent.HouseSold(playerId, propertyConfig.id, updatedAsset.houses)
+                asset = updatedAsset
+            }
+        }
+
+        if (!covered()) {
+            for (asset in currentState.assetsOwnedBy(playerId).filterNot { it.mortgaged }) {
+                if (covered()) break
+                val mortgageValue = mortgageValueFor(currentState, asset.id) ?: continue
+                val player = currentState.player(playerId)
+                currentState = currentState.copy(
+                    players = currentState.players.replace(player.copy(balance = player.balance + mortgageValue)),
+                    assets = currentState.assets + (asset.id to asset.copy(mortgaged = true))
+                )
+                events += GameEvent.MortgagePlaced(playerId, asset.id, mortgageValue)
+            }
+        }
+
+        return Triple(currentState, events, covered())
+    }
+
+    /**
+     * [creditorId] null means debt to the Bank: remaining assets become unowned and
+     * unmortgaged (GameRules.md §19 says these should be auctioned — Session 8 will
+     * wire that in; for now they're simply returned to the available pool) and any
+     * held Get Out of Jail Free cards return to their own decks. A named creditor
+     * instead receives every remaining asset and all remaining cash directly.
+     * Either way the debtor ends at 0 balance, no assets, no cards, bankrupt = true.
+     */
+    private fun declareBankruptcy(
+        state: GameState,
+        debtorId: PlayerId,
+        creditorId: PlayerId?,
+        priorEvents: List<GameEvent>
+    ): Pair<GameState, List<GameEvent>> {
+        val debtor = state.player(debtorId)
+        val events = priorEvents + GameEvent.PlayerBankrupted(debtorId, creditorId)
+        var currentState = state
+        val ownedAssetIds = currentState.assetsOwnedBy(debtorId).map { it.id }
+
+        if (creditorId != null) {
+            ownedAssetIds.forEach { assetId ->
+                currentState = currentState.copy(
+                    assets = currentState.assets + (assetId to currentState.assets.getValue(assetId).copy(ownerId = creditorId))
+                )
+            }
+            val creditor = currentState.player(creditorId)
+            currentState = currentState.copy(
+                players = currentState.players.replace(
+                    creditor.copy(
+                        balance = creditor.balance + debtor.balance,
+                        getOutOfJailCards = creditor.getOutOfJailCards + debtor.getOutOfJailCards
+                    )
+                )
+            )
+        } else {
+            ownedAssetIds.forEach { assetId ->
+                currentState = currentState.copy(
+                    assets = currentState.assets + (assetId to currentState.assets.getValue(assetId).copy(ownerId = null, mortgaged = false))
+                )
+            }
+            debtor.getOutOfJailCards.forEach { deck ->
+                val cardId = deckSourceFor(currentState, deck).first { it.effect == CardEffect.GetOutOfJailFree }.id
+                currentState = if (deck == Deck.CHANCE) {
+                    currentState.copy(chanceDeck = currentState.chanceDeck + cardId)
+                } else {
+                    currentState.copy(chestDeck = currentState.chestDeck + cardId)
+                }
+            }
+        }
+
+        val bankruptedPlayer = debtor.copy(balance = 0, bankrupt = true, getOutOfJailCards = emptyList())
+        currentState = currentState.copy(players = currentState.players.replace(bankruptedPlayer))
+        return currentState to events
+    }
+
+    /** For paths that don't route through advanceToNextPlayer but could still reduce non-bankrupt players to 1. */
+    private fun checkForGameOver(state: GameState): Pair<GameState, List<GameEvent>> =
+        if (state.nonBankruptPlayers.size <= 1) {
+            state.copy(phase = TurnPhase.GAME_OVER) to listOf(GameEvent.GameEnded)
+        } else {
+            state to emptyList()
+        }
 
     // --- Shared jail-entry / turn-advancement helpers ---
 
@@ -881,8 +1071,6 @@ class RulesEngineImpl : RulesEngine {
     private companion object {
         const val BOARD_SIZE = 40
         const val HOTEL_LEVEL = 5
-        const val BANKRUPTCY_TODO_MESSAGE =
-            "Session 7 will implement the bankruptcy path for a player who can't cover a mandatory card payment (GameRules.md §19)."
     }
 }
 

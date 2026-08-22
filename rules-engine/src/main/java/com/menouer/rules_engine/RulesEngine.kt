@@ -26,7 +26,9 @@ import com.menouer.rules_engine.model.TradeProposal
  * trade is pending, since GameState tracks one global phase rather than
  * per-player state; validated fully at proposal time and re-checked before
  * committing an accepted trade),
- * Session 7 (bankruptcy, cross-cutting),
+ * Session 7 (bankruptcy — cross-cutting: every place that previously threw a
+ * TODO `check(...)` on insufficient funds now routes through settleDebt,
+ * which auto-liquidates before declaring bankruptcy; see settleDebt's doc),
  * Session 8 (buyAsset/declinePurchase/placeBid — auctions).
  */
 interface RulesEngine {
