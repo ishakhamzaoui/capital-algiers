@@ -80,6 +80,10 @@ sealed class GameEvent {
     /** GameRules.md §18. amountPaid is mortgage value + 10% interest. */
     data class MortgageLifted(val playerId: PlayerId, val assetId: AssetId, val amountPaid: Int) : GameEvent()
 
+    data class TradeProposed(val fromPlayerId: PlayerId, val toPlayerId: PlayerId) : GameEvent()
+
+    data class TradeResolved(val fromPlayerId: PlayerId, val toPlayerId: PlayerId, val accepted: Boolean) : GameEvent()
+
     /** Emitted when a double grants the same player a bonus roll instead of ending the turn (GameRules.md §5). */
     data class BonusRollGranted(val playerId: PlayerId) : GameEvent()
 

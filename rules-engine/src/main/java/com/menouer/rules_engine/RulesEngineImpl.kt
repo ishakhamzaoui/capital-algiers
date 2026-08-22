@@ -15,6 +15,7 @@ import com.menouer.rules_engine.model.JailReleaseMethod
 import com.menouer.rules_engine.model.PlayerId
 import com.menouer.rules_engine.model.PlayerState
 import com.menouer.rules_engine.model.TradeProposal
+import com.menouer.rules_engine.model.TradeState
 import com.menouer.rules_engine.model.TurnPhase
 
 /**
@@ -241,11 +242,48 @@ class RulesEngineImpl : RulesEngine {
         return EngineResult.Applied(newState, listOf(GameEvent.MortgageLifted(playerId, assetId, totalCost)))
     }
 
-    override fun proposeTrade(state: GameState, trade: TradeProposal): EngineResult =
-        TODO("Session 6: trading")
+    override fun proposeTrade(state: GameState, trade: TradeProposal): EngineResult {
+        if (state.phase == TurnPhase.GAME_OVER) return EngineResult.Rejected(EngineError.WRONG_PHASE)
+        if (state.pendingTrade != null) return EngineResult.Rejected(EngineError.TRADE_ALREADY_PENDING)
 
-    override fun resolveTrade(state: GameState, accept: Boolean): EngineResult =
-        TODO("Session 6: trading")
+        val validationError = validateTradeProposal(state, trade)
+        if (validationError != null) return EngineResult.Rejected(validationError)
+
+        // Pauses the game (one global phase, no per-player tracking) until the
+        // counterparty responds; previousPhase is restored either way in resolveTrade.
+        val newState = state.copy(
+            pendingTrade = TradeState(trade, previousPhase = state.phase),
+            phase = TurnPhase.IN_TRADE
+        )
+        return EngineResult.Applied(newState, listOf(GameEvent.TradeProposed(trade.fromPlayerId, trade.toPlayerId)))
+    }
+
+    override fun resolveTrade(state: GameState, accept: Boolean): EngineResult {
+        if (state.phase != TurnPhase.IN_TRADE) return EngineResult.Rejected(EngineError.WRONG_PHASE)
+        val pending = state.pendingTrade ?: return EngineResult.Rejected(EngineError.INVALID_TRADE)
+
+        if (!accept) {
+            val restoredState = state.copy(pendingTrade = null, phase = pending.previousPhase)
+            return EngineResult.Applied(
+                restoredState,
+                listOf(GameEvent.TradeResolved(pending.proposal.fromPlayerId, pending.proposal.toPlayerId, accepted = false))
+            )
+        }
+
+        // MultiplayerProtocol.md §12: a trade commits atomically — all agreed assets
+        // transfer or none do. Re-validating here (rather than trusting the check at
+        // proposal time) keeps that guarantee honest even though nothing else could
+        // have changed while the game was paused IN_TRADE.
+        val validationError = validateTradeProposal(state.copy(pendingTrade = null), pending.proposal)
+        if (validationError != null) return EngineResult.Rejected(validationError)
+
+        val executedState = executeTrade(state, pending.proposal)
+        val newState = executedState.copy(pendingTrade = null, phase = pending.previousPhase)
+        return EngineResult.Applied(
+            newState,
+            listOf(GameEvent.TradeResolved(pending.proposal.fromPlayerId, pending.proposal.toPlayerId, accepted = true))
+        )
+    }
 
     // --- Normal (not-in-jail) roll ---
 
@@ -500,6 +538,83 @@ class RulesEngineImpl : RulesEngine {
         state.config.stationsById[assetId]?.let { return it.mortgageValue }
         state.config.utilitiesById[assetId]?.let { return it.mortgageValue }
         return null
+    }
+
+    // --- Trading (GameRules.md §17) ---
+
+    private fun validateTradeProposal(state: GameState, trade: TradeProposal): EngineError? {
+        if (trade.fromPlayerId == trade.toPlayerId) return EngineError.INVALID_TRADE
+        val from = state.playerOrNull(trade.fromPlayerId) ?: return EngineError.PLAYER_NOT_FOUND
+        val to = state.playerOrNull(trade.toPlayerId) ?: return EngineError.PLAYER_NOT_FOUND
+        if (from.bankrupt || to.bankrupt) return EngineError.PLAYER_BANKRUPT
+
+        if (trade.offeredCash < 0 || trade.requestedCash < 0) return EngineError.INVALID_TRADE
+        if (from.balance < trade.offeredCash) return EngineError.INSUFFICIENT_FUNDS
+        if (to.balance < trade.requestedCash) return EngineError.INSUFFICIENT_FUNDS
+
+        for (assetId in trade.offeredAssets) {
+            val asset = state.assets[assetId] ?: return EngineError.ASSET_NOT_FOUND
+            if (asset.ownerId != trade.fromPlayerId) return EngineError.ASSET_NOT_OWNED_BY_PLAYER
+            if (assetGroupHasBuildings(state, assetId)) return EngineError.MUST_SELL_BUILDINGS_FIRST
+        }
+        for (assetId in trade.requestedAssets) {
+            val asset = state.assets[assetId] ?: return EngineError.ASSET_NOT_FOUND
+            if (asset.ownerId != trade.toPlayerId) return EngineError.ASSET_NOT_OWNED_BY_PLAYER
+            if (assetGroupHasBuildings(state, assetId)) return EngineError.MUST_SELL_BUILDINGS_FIRST
+        }
+
+        if (!playerHoldsCards(from, trade.offeredGetOutOfJailCards)) return EngineError.NO_GET_OUT_OF_JAIL_CARD
+        if (!playerHoldsCards(to, trade.requestedGetOutOfJailCards)) return EngineError.NO_GET_OUT_OF_JAIL_CARD
+
+        return null
+    }
+
+    /** GameRules.md §17: a property can't be traded while its group contains ANY buildings, even on a different member. */
+    private fun assetGroupHasBuildings(state: GameState, assetId: AssetId): Boolean {
+        val propertyConfig = state.config.propertiesById[assetId] ?: return false // stations/utilities never carry buildings
+        return state.config.propertiesInGroup(propertyConfig.group).any {
+            val a = state.assets.getValue(it.id)
+            a.houses > 0 || a.hasHotel
+        }
+    }
+
+    private fun playerHoldsCards(player: PlayerState, required: List<Deck>): Boolean {
+        val available = player.getOutOfJailCards.toMutableList()
+        return required.all { available.remove(it) }
+    }
+
+    private fun executeTrade(state: GameState, trade: TradeProposal): GameState {
+        val from = state.player(trade.fromPlayerId)
+        val to = state.player(trade.toPlayerId)
+
+        val fromCardsAfterGiving = from.getOutOfJailCards.toMutableList().apply {
+            trade.offeredGetOutOfJailCards.forEach { remove(it) }
+        }
+        val toCardsAfterGiving = to.getOutOfJailCards.toMutableList().apply {
+            trade.requestedGetOutOfJailCards.forEach { remove(it) }
+        }
+
+        val updatedFrom = from.copy(
+            balance = from.balance - trade.offeredCash + trade.requestedCash,
+            getOutOfJailCards = fromCardsAfterGiving + trade.requestedGetOutOfJailCards
+        )
+        val updatedTo = to.copy(
+            balance = to.balance - trade.requestedCash + trade.offeredCash,
+            getOutOfJailCards = toCardsAfterGiving + trade.offeredGetOutOfJailCards
+        )
+
+        var updatedAssets = state.assets
+        trade.offeredAssets.forEach { assetId ->
+            updatedAssets = updatedAssets + (assetId to updatedAssets.getValue(assetId).copy(ownerId = trade.toPlayerId))
+        }
+        trade.requestedAssets.forEach { assetId ->
+            updatedAssets = updatedAssets + (assetId to updatedAssets.getValue(assetId).copy(ownerId = trade.fromPlayerId))
+        }
+
+        return state.copy(
+            players = state.players.replace(updatedFrom).replace(updatedTo),
+            assets = updatedAssets
+        )
     }
 
     // --- Card resolution (Cards.md) ---

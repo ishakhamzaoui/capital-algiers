@@ -22,8 +22,10 @@ import com.menouer.rules_engine.model.TradeProposal
  * even-building constraint, and the mortgage-blocks-building rule),
  * Session 5 (mortgage/unmortgage — 50% value, 10% interest to lift, and the
  * sell-buildings-first precondition),
- * Session 5 (mortgage/unmortgage),
- * Session 6 (proposeTrade/resolveTrade),
+ * Session 6 (proposeTrade/resolveTrade — pauses the game to IN_TRADE while a
+ * trade is pending, since GameState tracks one global phase rather than
+ * per-player state; validated fully at proposal time and re-checked before
+ * committing an accepted trade),
  * Session 7 (bankruptcy, cross-cutting),
  * Session 8 (buyAsset/declinePurchase/placeBid — auctions).
  */
