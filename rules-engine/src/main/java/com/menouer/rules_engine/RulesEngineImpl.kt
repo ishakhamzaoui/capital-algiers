@@ -6,6 +6,7 @@ import com.menouer.economy_data.SpaceType
 import com.menouer.rules_engine.dice.DiceRoll
 import com.menouer.rules_engine.model.AssetId
 import com.menouer.rules_engine.model.AssetState
+import com.menouer.rules_engine.model.AuctionState
 import com.menouer.rules_engine.model.EngineError
 import com.menouer.rules_engine.model.EngineResult
 import com.menouer.rules_engine.model.GameEvent
@@ -86,16 +87,127 @@ class RulesEngineImpl : RulesEngine {
         }
     }
 
-    // --- Stubs for later sessions ---
+    // --- Purchase / auctions (GameRules.md §7) ---
 
-    override fun buyAsset(state: GameState, playerId: PlayerId, assetId: AssetId): EngineResult =
-        TODO("Session 8: auctions/purchase")
+    override fun buyAsset(state: GameState, playerId: PlayerId, assetId: AssetId): EngineResult {
+        if (state.phase != TurnPhase.AWAITING_PURCHASE_DECISION) return EngineResult.Rejected(EngineError.WRONG_PHASE)
+        if (playerId != state.activePlayerId) return EngineResult.Rejected(EngineError.NOT_ACTIVE_PLAYER)
 
-    override fun declinePurchase(state: GameState, playerId: PlayerId): EngineResult =
-        TODO("Session 8: auctions/purchase")
+        val pendingAssetId = pendingPurchaseAssetId(state) ?: return EngineResult.Rejected(EngineError.INVALID_REQUEST)
+        if (assetId != pendingAssetId) return EngineResult.Rejected(EngineError.INVALID_REQUEST)
 
-    override fun placeBid(state: GameState, playerId: PlayerId, amount: Int): EngineResult =
-        TODO("Session 8: auctions/purchase")
+        val asset = state.assets.getValue(assetId)
+        if (asset.ownerId != null) return EngineResult.Rejected(EngineError.ASSET_ALREADY_OWNED)
+
+        val price = purchasePriceFor(state, assetId) ?: return EngineResult.Rejected(EngineError.ASSET_NOT_FOUND)
+        val player = state.player(playerId)
+        if (player.balance < price) return EngineResult.Rejected(EngineError.INSUFFICIENT_FUNDS)
+
+        val updatedPlayer = player.copy(balance = player.balance - price)
+        val updatedAsset = asset.copy(ownerId = playerId)
+        val newState = state.copy(
+            players = state.players.replace(updatedPlayer),
+            assets = state.assets + (assetId to updatedAsset),
+            phase = TurnPhase.AWAITING_OPTIONAL_ACTIONS
+        )
+        return EngineResult.Applied(newState, listOf(GameEvent.AssetPurchased(playerId, assetId, price)))
+    }
+
+    override fun declinePurchase(state: GameState, playerId: PlayerId): EngineResult {
+        if (state.phase != TurnPhase.AWAITING_PURCHASE_DECISION) return EngineResult.Rejected(EngineError.WRONG_PHASE)
+        if (playerId != state.activePlayerId) return EngineResult.Rejected(EngineError.NOT_ACTIVE_PLAYER)
+
+        val assetId = pendingPurchaseAssetId(state) ?: return EngineResult.Rejected(EngineError.INVALID_REQUEST)
+        val minimumBid = state.config.constants.auctionMinimumBid
+
+        // GameRules.md §7: the player who declined may still participate in the auction.
+        val auction = AuctionState(
+            assetId = assetId,
+            highestBid = 0,
+            highestBidderId = null,
+            eligibleBidders = state.nonBankruptPlayers.map { it.id }.toSet()
+        )
+        val newState = state.copy(phase = TurnPhase.IN_AUCTION, pendingAuction = auction)
+        return EngineResult.Applied(newState, listOf(GameEvent.AuctionStarted(assetId, minimumBid)))
+    }
+
+    override fun placeBid(state: GameState, playerId: PlayerId, amount: Int): EngineResult {
+        if (state.phase != TurnPhase.IN_AUCTION) return EngineResult.Rejected(EngineError.WRONG_PHASE)
+        val auction = state.pendingAuction ?: return EngineResult.Rejected(EngineError.NOT_IN_AUCTION)
+        if (playerId !in auction.eligibleBidders || playerId in auction.passedBidders) {
+            return EngineResult.Rejected(EngineError.NOT_ELIGIBLE_TO_BID)
+        }
+
+        val minimumValid = if (auction.highestBidderId == null) {
+            state.config.constants.auctionMinimumBid
+        } else {
+            auction.highestBid + state.config.constants.auctionMinimumIncrement
+        }
+        if (amount < minimumValid) return EngineResult.Rejected(EngineError.INVALID_BID)
+
+        val player = state.player(playerId)
+        if (player.balance < amount) return EngineResult.Rejected(EngineError.INSUFFICIENT_FUNDS)
+
+        val updatedAuction = auction.copy(highestBid = amount, highestBidderId = playerId)
+        val stateWithBid = state.copy(pendingAuction = updatedAuction)
+        return concludeAuctionIfDone(stateWithBid, listOf(GameEvent.AuctionBidPlaced(playerId, auction.assetId, amount)))
+    }
+
+    override fun passAuction(state: GameState, playerId: PlayerId): EngineResult {
+        if (state.phase != TurnPhase.IN_AUCTION) return EngineResult.Rejected(EngineError.WRONG_PHASE)
+        val auction = state.pendingAuction ?: return EngineResult.Rejected(EngineError.NOT_IN_AUCTION)
+        if (playerId !in auction.eligibleBidders || playerId in auction.passedBidders) {
+            return EngineResult.Rejected(EngineError.NOT_ELIGIBLE_TO_BID)
+        }
+
+        val updatedAuction = auction.copy(passedBidders = auction.passedBidders + playerId)
+        val stateWithPass = state.copy(pendingAuction = updatedAuction)
+        return concludeAuctionIfDone(stateWithPass, listOf(GameEvent.AuctionPassed(playerId, auction.assetId)))
+    }
+
+    /**
+     * GameRules.md §7: "The auction ends when all other eligible bidders have
+     * passed or timed out" (timeouts are MultiplayerProtocol.md's concern, resolved
+     * into an equivalent passAuction call before it ever reaches the engine). Here
+     * that means: everyone except the current highest bidder (if any) has passed.
+     */
+    private fun concludeAuctionIfDone(state: GameState, priorEvents: List<GameEvent>): EngineResult {
+        val auction = state.pendingAuction!!
+        val remaining = auction.eligibleBidders - auction.passedBidders - setOfNotNull(auction.highestBidderId)
+        if (remaining.isNotEmpty()) return EngineResult.Applied(state, priorEvents) // still waiting on someone
+
+        val events = priorEvents.toMutableList()
+        val winnerId = auction.highestBidderId
+
+        return if (winnerId != null) {
+            val winner = state.player(winnerId)
+            val updatedWinner = winner.copy(balance = winner.balance - auction.highestBid)
+            val updatedAsset = state.assets.getValue(auction.assetId).copy(ownerId = winnerId)
+            events += GameEvent.AuctionWon(winnerId, auction.assetId, auction.highestBid)
+            val newState = state.copy(
+                players = state.players.replace(updatedWinner),
+                assets = state.assets + (auction.assetId to updatedAsset),
+                phase = TurnPhase.AWAITING_OPTIONAL_ACTIONS,
+                pendingAuction = null
+            )
+            EngineResult.Applied(newState, events)
+        } else {
+            events += GameEvent.AuctionEndedWithNoBids(auction.assetId)
+            val newState = state.copy(phase = TurnPhase.AWAITING_OPTIONAL_ACTIONS, pendingAuction = null)
+            EngineResult.Applied(newState, events)
+        }
+    }
+
+    /** The asset at the active player's current position — always correct since nothing moves between landing and this decision. */
+    private fun pendingPurchaseAssetId(state: GameState): AssetId? =
+        state.config.spacesByIndex[state.activePlayer.position]?.assetId
+
+    private fun purchasePriceFor(state: GameState, assetId: AssetId): Int? {
+        state.config.propertiesById[assetId]?.let { return it.purchasePrice }
+        state.config.stationsById[assetId]?.let { return it.purchasePrice }
+        state.config.utilitiesById[assetId]?.let { return it.purchasePrice }
+        return null
+    }
 
     override fun build(state: GameState, playerId: PlayerId, assetId: AssetId): EngineResult {
         if (state.phase != TurnPhase.AWAITING_OPTIONAL_ACTIONS) return EngineResult.Rejected(EngineError.WRONG_PHASE)

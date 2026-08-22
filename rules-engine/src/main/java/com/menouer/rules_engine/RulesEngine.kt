@@ -29,7 +29,8 @@ import com.menouer.rules_engine.model.TradeProposal
  * Session 7 (bankruptcy — cross-cutting: every place that previously threw a
  * TODO `check(...)` on insufficient funds now routes through settleDebt,
  * which auto-liquidates before declaring bankruptcy; see settleDebt's doc),
- * Session 8 (buyAsset/declinePurchase/placeBid — auctions).
+ * Session 8 (buyAsset/declinePurchase/placeBid/passAuction — auctions; see
+ * passAuction's doc for why it's a distinct method from placeBid).
  */
 interface RulesEngine {
     fun applyRoll(state: GameState, playerId: PlayerId, dice: DiceRoll): EngineResult
@@ -38,6 +39,14 @@ interface RulesEngine {
     fun buyAsset(state: GameState, playerId: PlayerId, assetId: AssetId): EngineResult
     fun declinePurchase(state: GameState, playerId: PlayerId): EngineResult
     fun placeBid(state: GameState, playerId: PlayerId, amount: Int): EngineResult
+
+    /**
+     * MultiplayerProtocol.md §6 lists AuctionPassRequest separately from
+     * AuctionBidRequest — passing isn't "a bid of zero", it's a permanent
+     * withdrawal from this auction's remaining bidder pool, so it gets its own
+     * method rather than overloading placeBid's amount parameter.
+     */
+    fun passAuction(state: GameState, playerId: PlayerId): EngineResult
 
     fun build(state: GameState, playerId: PlayerId, assetId: AssetId): EngineResult
     fun sellBuilding(state: GameState, playerId: PlayerId, assetId: AssetId): EngineResult

@@ -91,6 +91,20 @@ sealed class GameEvent {
      */
     data class PlayerBankrupted(val playerId: PlayerId, val creditorId: PlayerId?) : GameEvent()
 
+    /** GameRules.md §7: bought directly at the listed price, no auction needed. */
+    data class AssetPurchased(val playerId: PlayerId, val assetId: AssetId, val price: Int) : GameEvent()
+
+    data class AuctionStarted(val assetId: AssetId, val minimumBid: Int) : GameEvent()
+
+    data class AuctionBidPlaced(val playerId: PlayerId, val assetId: AssetId, val amount: Int) : GameEvent()
+
+    data class AuctionPassed(val playerId: PlayerId, val assetId: AssetId) : GameEvent()
+
+    data class AuctionWon(val playerId: PlayerId, val assetId: AssetId, val amount: Int) : GameEvent()
+
+    /** GameRules.md §7: "If nobody makes a valid bid, the asset remains unowned." */
+    data class AuctionEndedWithNoBids(val assetId: AssetId) : GameEvent()
+
     /** Emitted when a double grants the same player a bonus roll instead of ending the turn (GameRules.md §5). */
     data class BonusRollGranted(val playerId: PlayerId) : GameEvent()
 
