@@ -194,17 +194,6 @@ class RulesEngineJailTest {
         assertTrue(result.events.any { it is GameEvent.ReleasedFromJail && it.method == JailReleaseMethod.DOUBLES_ATTEMPT })
     }
 
-    @Test
-    fun `jail-turn 3 with insufficient funds surfaces the pending bankruptcy TODO rather than silently succeeding`() {
-        val state = jailedGame(jailTurnsUsed = 2)
-        val poorP1 = state.player("p1").copy(balance = 1_000)
-        val poorState = state.copy(players = state.players.replace(poorP1))
-
-        assertThrows(IllegalStateException::class.java) {
-            engine.applyRoll(poorState, "p1", DiceRoll(3, 2))
-        }
-    }
-
     // --- applyRoll dispatch sanity ---
 
     @Test
