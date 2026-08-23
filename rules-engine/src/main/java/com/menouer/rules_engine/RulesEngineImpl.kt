@@ -1147,6 +1147,22 @@ class RulesEngineImpl : RulesEngine {
      * Advances to the next non-bankrupt player, resets per-turn doubles/bonus-roll
      * tracking, and checks for a win per GameRules.md §20.
      */
+    /**
+     * Forcibly ends the current turn without going through AWAITING_OPTIONAL_ACTIONS —
+     * used when a rule ends the turn immediately (3-consecutive-doubles, landing on
+     * GO_TO_JAIL, a GoToJail card, or the active player going bankrupt), as opposed
+     * to the player choosing to end it. Advances to the next non-bankrupt player,
+     * resets per-turn doubles/bonus-roll tracking, and checks for a win per
+     * GameRules.md §20.
+     *
+     * Walks the FULL players list (not the filtered non-bankrupt one) to find the
+     * current active player's position, then scans forward skipping any bankrupt
+     * players. This matters specifically when the active player themselves just
+     * went bankrupt: they've been removed from nonBankruptPlayers by that point, so
+     * searching within that filtered list can't find their index at all — which
+     * would incorrectly wrap turn order back to the very first player instead of
+     * continuing on to whoever is actually next.
+     */
     internal fun advanceToNextPlayer(state: GameState): Pair<GameState, List<GameEvent>> {
         val nonBankrupt = state.nonBankruptPlayers
         if (nonBankrupt.size <= 1) {
@@ -1159,14 +1175,15 @@ class RulesEngineImpl : RulesEngine {
             return winnerState to listOf(GameEvent.GameEnded)
         }
 
-        val currentIndex = nonBankrupt.indexOfFirst { it.id == state.activePlayerId }
-        // If the active player just went bankrupt as part of this same transition in a
-        // future session, currentIndex could be -1; fall back to wrapping from the start.
-        val nextPlayer = if (currentIndex == -1) {
-            nonBankrupt.first()
-        } else {
-            nonBankrupt[(currentIndex + 1) % nonBankrupt.size]
+        val fullOrder = state.players
+        val currentIndex = fullOrder.indexOfFirst { it.id == state.activePlayerId }
+        check(currentIndex != -1) { "activePlayerId ${state.activePlayerId} not found among players" }
+
+        var nextIndex = (currentIndex + 1) % fullOrder.size
+        while (fullOrder[nextIndex].bankrupt) {
+            nextIndex = (nextIndex + 1) % fullOrder.size
         }
+        val nextPlayer = fullOrder[nextIndex]
 
         val nextPhase = if (nextPlayer.inJail) TurnPhase.AWAITING_JAIL_DECISION else TurnPhase.AWAITING_ROLL
 
