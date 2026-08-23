@@ -44,6 +44,7 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
@@ -55,4 +56,12 @@ dependencies {
     implementation(project(":protocol"))
     implementation(project(":networking"))
     implementation(project(":persistence"))
+
+    // M3 (Local Hotseat Prototype) talks directly to the rules engine in-process,
+    // deliberately bypassing :protocol/:networking per DevelopmentRoadmap.md's M3
+    // goal. This is a temporary addition to the module graph vs.
+    // TechnicalSpecification.md §2's app -> networking/persistence -> protocol ->
+    // rules-engine chain; recorded here rather than silently absorbed.
+    implementation(project(":rules-engine"))
+    implementation(project(":economy-data"))
 }
