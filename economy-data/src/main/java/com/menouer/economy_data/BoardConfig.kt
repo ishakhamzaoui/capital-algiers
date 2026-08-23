@@ -3,10 +3,12 @@ package com.menouer.economy_data
 /**
  * The complete, validated economy configuration consumed by rules-engine.
  *
- * In M1 this is populated in-memory by [SampleEconomyData] with the real,
- * finalized numbers from BoardEconomy.md / Cards.md. In M2 the same shape
- * will be populated by a JSON loader + startup validator instead — nothing
- * in rules-engine should need to change when that swap happens.
+ * Populated by [EconomyConfigLoader] reading economy-config.json (the single
+ * source of truth transcribed from BoardEconomy.md / Cards.md), and checked
+ * by [EconomyConfigValidator] before use. This shape has been stable since
+ * M1 — M2 replaced the *source* of the data (JSON + loader/validator instead
+ * of the hand-transcribed SampleEconomyData fixture) without changing what
+ * rules-engine consumes.
  */
 data class BoardConfig(
     val constants: EconomyConstants,
