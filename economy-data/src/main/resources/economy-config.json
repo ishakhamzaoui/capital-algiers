@@ -1,0 +1,142 @@
+{
+  "constants": {
+    "startingMoney": 150000,
+    "goReward": 20000,
+    "jailFine": 5000,
+    "mortgageInterestRate": 0.10,
+    "buildingResaleRate": 0.50,
+    "totalHouses": 32,
+    "totalHotels": 12,
+    "auctionMinimumBid": 1000,
+    "auctionMinimumIncrement": 500,
+    "singleUtilityMultiplier": 4,
+    "bothUtilitiesMultiplier": 10,
+    "incomeTax": 20000,
+    "luxuryTax": 10000
+  },
+
+  "spaces": [
+    { "index": 0,  "type": "GO",                "nameArabic": "انطلق – الجزائر العاصمة",      "developerName": "GO" },
+    { "index": 1,  "type": "PROPERTY",          "nameArabic": "درڨانة",                       "developerName": "Dergana",              "assetId": "Dergana" },
+    { "index": 2,  "type": "COMMUNITY_CHEST",   "nameArabic": "صندوق العاصمة",                "developerName": "CapitalChest" },
+    { "index": 3,  "type": "PROPERTY",          "nameArabic": "وادي قريش",                    "developerName": "OuedKoriche",          "assetId": "OuedKoriche" },
+    { "index": 4,  "type": "TAX",               "nameArabic": "الضريبة",                      "developerName": "IncomeTax" },
+    { "index": 5,  "type": "STATION",           "nameArabic": "محطة الجزائر – آغا",           "developerName": "AghaStation",          "assetId": "AghaStation" },
+    { "index": 6,  "type": "PROPERTY",          "nameArabic": "باب الوادي",                   "developerName": "BabElOued",            "assetId": "BabElOued" },
+    { "index": 7,  "type": "CHANCE",            "nameArabic": "الحظ",                         "developerName": "Chance" },
+    { "index": 8,  "type": "PROPERTY",          "nameArabic": "بولوغين",                      "developerName": "Bologhine",            "assetId": "Bologhine" },
+    { "index": 9,  "type": "PROPERTY",          "nameArabic": "القصبة",                       "developerName": "Casbah",               "assetId": "Casbah" },
+    { "index": 10, "type": "JAIL",              "nameArabic": "سجن الحراش / زيارة فقط",       "developerName": "ElHarrachJail" },
+    { "index": 11, "type": "PROPERTY",          "nameArabic": "الحراش",                       "developerName": "ElHarrach",            "assetId": "ElHarrach" },
+    { "index": 12, "type": "UTILITY",           "nameArabic": "سونلغاز",                      "developerName": "Sonelgaz",             "assetId": "Sonelgaz" },
+    { "index": 13, "type": "PROPERTY",          "nameArabic": "بوروبة",                       "developerName": "Bourouba",             "assetId": "Bourouba" },
+    { "index": 14, "type": "PROPERTY",          "nameArabic": "بلوزداد",                      "developerName": "Belouizdad",           "assetId": "Belouizdad" },
+    { "index": 15, "type": "STATION",           "nameArabic": "محطة الحراش",                  "developerName": "ElHarrachStation",     "assetId": "ElHarrachStation" },
+    { "index": 16, "type": "PROPERTY",          "nameArabic": "حسين داي",                     "developerName": "HusseinDey",           "assetId": "HusseinDey" },
+    { "index": 17, "type": "COMMUNITY_CHEST",   "nameArabic": "صندوق العاصمة",                "developerName": "CapitalChest" },
+    { "index": 18, "type": "PROPERTY",          "nameArabic": "القبة",                        "developerName": "Kouba",                "assetId": "Kouba" },
+    { "index": 19, "type": "PROPERTY",          "nameArabic": "المدنية",                      "developerName": "ElMadania",            "assetId": "ElMadania" },
+    { "index": 20, "type": "FREE_PARKING",      "nameArabic": "موقف مجاني",                   "developerName": "FreeParking" },
+    { "index": 21, "type": "PROPERTY",          "nameArabic": "بئر مراد رايس",                "developerName": "BirMouradRais",        "assetId": "BirMouradRais" },
+    { "index": 22, "type": "CHANCE",            "nameArabic": "الحظ",                         "developerName": "Chance" },
+    { "index": 23, "type": "PROPERTY",          "nameArabic": "بن عكنون",                     "developerName": "BenAknoun",            "assetId": "BenAknoun" },
+    { "index": 24, "type": "PROPERTY",          "nameArabic": "الأبيار",                       "developerName": "ElBiar",               "assetId": "ElBiar" },
+    { "index": 25, "type": "STATION",           "nameArabic": "محطة مترو ساحة الشهداء",       "developerName": "PlaceDesMartyrsMetro", "assetId": "PlaceDesMartyrsMetro" },
+    { "index": 26, "type": "PROPERTY",          "nameArabic": "الشراقة",                      "developerName": "Cheraga",              "assetId": "Cheraga" },
+    { "index": 27, "type": "PROPERTY",          "nameArabic": "دالي إبراهيم",                 "developerName": "DelyIbrahim",          "assetId": "DelyIbrahim" },
+    { "index": 28, "type": "UTILITY",           "nameArabic": "سيال",                         "developerName": "SEAAL",                "assetId": "SEAAL" },
+    { "index": 29, "type": "PROPERTY",          "nameArabic": "سيدي عبد الله",                "developerName": "SidiAbdellah",         "assetId": "SidiAbdellah" },
+    { "index": 30, "type": "GO_TO_JAIL",        "nameArabic": "اذهب إلى سجن الحراش",          "developerName": "GoToJail" },
+    { "index": 31, "type": "PROPERTY",          "nameArabic": "المحمدية",                     "developerName": "Mohammadia",           "assetId": "Mohammadia" },
+    { "index": 32, "type": "PROPERTY",          "nameArabic": "عين البنيان",                  "developerName": "AinBenian",            "assetId": "AinBenian" },
+    { "index": 33, "type": "COMMUNITY_CHEST",   "nameArabic": "صندوق العاصمة",                "developerName": "CapitalChest" },
+    { "index": 34, "type": "PROPERTY",          "nameArabic": "المرادية",                     "developerName": "ElMouradia",           "assetId": "ElMouradia" },
+    { "index": 35, "type": "STATION",           "nameArabic": "محطة ترامواي باب الزوار",      "developerName": "BabEzzouarTramway",    "assetId": "BabEzzouarTramway" },
+    { "index": 36, "type": "CHANCE",            "nameArabic": "الحظ",                         "developerName": "Chance" },
+    { "index": 37, "type": "PROPERTY",          "nameArabic": "حيدرة",                        "developerName": "Hydra",                "assetId": "Hydra" },
+    { "index": 38, "type": "TAX",               "nameArabic": "ضريبة الرفاهية",               "developerName": "LuxuryTax" },
+    { "index": 39, "type": "PROPERTY",          "nameArabic": "سيدي يحيى",                    "developerName": "SidiYahia",            "assetId": "SidiYahia" }
+  ],
+
+  "properties": [
+    { "id": "Dergana",       "boardPosition": 1,  "nameArabic": "درڨانة",         "nameLatin": "Dergana",         "group": "BROWN",      "purchasePrice": 6000,  "mortgageValue": 3000,  "baseRent": 200,  "monopolyRent": 400,  "rent1House": 1000,  "rent2Houses": 3000,  "rent3Houses": 9000,   "rent4Houses": 16000,  "hotelRent": 25000,  "houseCost": 5000 },
+    { "id": "OuedKoriche",   "boardPosition": 3,  "nameArabic": "وادي قريش",      "nameLatin": "Oued Koriche",    "group": "BROWN",      "purchasePrice": 6000,  "mortgageValue": 3000,  "baseRent": 400,  "monopolyRent": 800,  "rent1House": 2000,  "rent2Houses": 6000,  "rent3Houses": 18000,  "rent4Houses": 32000,  "hotelRent": 45000,  "houseCost": 5000 },
+
+    { "id": "BabElOued",     "boardPosition": 6,  "nameArabic": "باب الوادي",     "nameLatin": "Bab El Oued",     "group": "LIGHT_BLUE", "purchasePrice": 10000, "mortgageValue": 5000,  "baseRent": 600,  "monopolyRent": 1200, "rent1House": 3000,  "rent2Houses": 9000,  "rent3Houses": 27000,  "rent4Houses": 40000,  "hotelRent": 55000,  "houseCost": 5000 },
+    { "id": "Bologhine",     "boardPosition": 8,  "nameArabic": "بولوغين",        "nameLatin": "Bologhine",       "group": "LIGHT_BLUE", "purchasePrice": 10000, "mortgageValue": 5000,  "baseRent": 600,  "monopolyRent": 1200, "rent1House": 3000,  "rent2Houses": 9000,  "rent3Houses": 27000,  "rent4Houses": 40000,  "hotelRent": 55000,  "houseCost": 5000 },
+    { "id": "Casbah",        "boardPosition": 9,  "nameArabic": "القصبة",         "nameLatin": "Casbah",          "group": "LIGHT_BLUE", "purchasePrice": 12000, "mortgageValue": 6000,  "baseRent": 800,  "monopolyRent": 1600, "rent1House": 4000,  "rent2Houses": 10000, "rent3Houses": 30000,  "rent4Houses": 45000,  "hotelRent": 60000,  "houseCost": 5000 },
+
+    { "id": "ElHarrach",     "boardPosition": 11, "nameArabic": "الحراش",         "nameLatin": "El Harrach",      "group": "PINK",       "purchasePrice": 14000, "mortgageValue": 7000,  "baseRent": 1000, "monopolyRent": 2000, "rent1House": 5000,  "rent2Houses": 15000, "rent3Houses": 45000,  "rent4Houses": 62500,  "hotelRent": 75000,  "houseCost": 10000 },
+    { "id": "Bourouba",      "boardPosition": 13, "nameArabic": "بوروبة",         "nameLatin": "Bourouba",        "group": "PINK",       "purchasePrice": 14000, "mortgageValue": 7000,  "baseRent": 1000, "monopolyRent": 2000, "rent1House": 5000,  "rent2Houses": 15000, "rent3Houses": 45000,  "rent4Houses": 62500,  "hotelRent": 75000,  "houseCost": 10000 },
+    { "id": "Belouizdad",    "boardPosition": 14, "nameArabic": "بلوزداد",        "nameLatin": "Belouizdad",      "group": "PINK",       "purchasePrice": 16000, "mortgageValue": 8000,  "baseRent": 1200, "monopolyRent": 2400, "rent1House": 6000,  "rent2Houses": 18000, "rent3Houses": 50000,  "rent4Houses": 70000,  "hotelRent": 90000,  "houseCost": 10000 },
+
+    { "id": "HusseinDey",    "boardPosition": 16, "nameArabic": "حسين داي",       "nameLatin": "Hussein Dey",     "group": "ORANGE",     "purchasePrice": 18000, "mortgageValue": 9000,  "baseRent": 1400, "monopolyRent": 2800, "rent1House": 7000,  "rent2Houses": 20000, "rent3Houses": 55000,  "rent4Houses": 75000,  "hotelRent": 95000,  "houseCost": 10000 },
+    { "id": "Kouba",         "boardPosition": 18, "nameArabic": "القبة",          "nameLatin": "Kouba",           "group": "ORANGE",     "purchasePrice": 18000, "mortgageValue": 9000,  "baseRent": 1400, "monopolyRent": 2800, "rent1House": 7000,  "rent2Houses": 20000, "rent3Houses": 55000,  "rent4Houses": 75000,  "hotelRent": 95000,  "houseCost": 10000 },
+    { "id": "ElMadania",     "boardPosition": 19, "nameArabic": "المدنية",        "nameLatin": "El Madania",      "group": "ORANGE",     "purchasePrice": 20000, "mortgageValue": 10000, "baseRent": 1600, "monopolyRent": 3200, "rent1House": 8000,  "rent2Houses": 22000, "rent3Houses": 60000,  "rent4Houses": 80000,  "hotelRent": 100000, "houseCost": 10000 },
+
+    { "id": "BirMouradRais", "boardPosition": 21, "nameArabic": "بئر مراد رايس",  "nameLatin": "Bir Mourad Raïs", "group": "RED",        "purchasePrice": 22000, "mortgageValue": 11000, "baseRent": 1800, "monopolyRent": 3600, "rent1House": 9000,  "rent2Houses": 25000, "rent3Houses": 70000,  "rent4Houses": 87500,  "hotelRent": 105000, "houseCost": 15000 },
+    { "id": "BenAknoun",     "boardPosition": 23, "nameArabic": "بن عكنون",       "nameLatin": "Ben Aknoun",      "group": "RED",        "purchasePrice": 22000, "mortgageValue": 11000, "baseRent": 1800, "monopolyRent": 3600, "rent1House": 9000,  "rent2Houses": 25000, "rent3Houses": 70000,  "rent4Houses": 87500,  "hotelRent": 105000, "houseCost": 15000 },
+    { "id": "ElBiar",        "boardPosition": 24, "nameArabic": "الأبيار",         "nameLatin": "El Biar",         "group": "RED",        "purchasePrice": 24000, "mortgageValue": 12000, "baseRent": 2000, "monopolyRent": 4000, "rent1House": 10000, "rent2Houses": 30000, "rent3Houses": 75000,  "rent4Houses": 92500,  "hotelRent": 110000, "houseCost": 15000 },
+
+    { "id": "Cheraga",       "boardPosition": 26, "nameArabic": "الشراقة",        "nameLatin": "Chéraga",         "group": "YELLOW",     "purchasePrice": 26000, "mortgageValue": 13000, "baseRent": 2200, "monopolyRent": 4400, "rent1House": 11000, "rent2Houses": 33000, "rent3Houses": 80000,  "rent4Houses": 97500,  "hotelRent": 115000, "houseCost": 15000 },
+    { "id": "DelyIbrahim",   "boardPosition": 27, "nameArabic": "دالي إبراهيم",   "nameLatin": "Dely Ibrahim",    "group": "YELLOW",     "purchasePrice": 26000, "mortgageValue": 13000, "baseRent": 2200, "monopolyRent": 4400, "rent1House": 11000, "rent2Houses": 33000, "rent3Houses": 80000,  "rent4Houses": 97500,  "hotelRent": 115000, "houseCost": 15000 },
+    { "id": "SidiAbdellah",  "boardPosition": 29, "nameArabic": "سيدي عبد الله",  "nameLatin": "Sidi Abdellah",   "group": "YELLOW",     "purchasePrice": 28000, "mortgageValue": 14000, "baseRent": 2400, "monopolyRent": 4800, "rent1House": 12000, "rent2Houses": 36000, "rent3Houses": 85000,  "rent4Houses": 102500, "hotelRent": 120000, "houseCost": 15000 },
+
+    { "id": "Mohammadia",    "boardPosition": 31, "nameArabic": "المحمدية",       "nameLatin": "Mohammadia",      "group": "GREEN",      "purchasePrice": 30000, "mortgageValue": 15000, "baseRent": 2600, "monopolyRent": 5200, "rent1House": 13000, "rent2Houses": 39000, "rent3Houses": 90000,  "rent4Houses": 110000, "hotelRent": 127500, "houseCost": 20000 },
+    { "id": "AinBenian",     "boardPosition": 32, "nameArabic": "عين البنيان",    "nameLatin": "Aïn Benian",      "group": "GREEN",      "purchasePrice": 30000, "mortgageValue": 15000, "baseRent": 2600, "monopolyRent": 5200, "rent1House": 13000, "rent2Houses": 39000, "rent3Houses": 90000,  "rent4Houses": 110000, "hotelRent": 127500, "houseCost": 20000 },
+    { "id": "ElMouradia",    "boardPosition": 34, "nameArabic": "المرادية",       "nameLatin": "El Mouradia",     "group": "GREEN",      "purchasePrice": 32000, "mortgageValue": 16000, "baseRent": 2800, "monopolyRent": 5600, "rent1House": 15000, "rent2Houses": 45000, "rent3Houses": 100000, "rent4Houses": 120000, "hotelRent": 140000, "houseCost": 20000 },
+
+    { "id": "Hydra",         "boardPosition": 37, "nameArabic": "حيدرة",          "nameLatin": "Hydra",           "group": "DARK_BLUE",  "purchasePrice": 35000, "mortgageValue": 17500, "baseRent": 3500, "monopolyRent": 7000, "rent1House": 17500, "rent2Houses": 50000, "rent3Houses": 110000, "rent4Houses": 130000, "hotelRent": 150000, "houseCost": 20000 },
+    { "id": "SidiYahia",     "boardPosition": 39, "nameArabic": "سيدي يحيى",      "nameLatin": "Sidi Yahia",      "group": "DARK_BLUE",  "purchasePrice": 40000, "mortgageValue": 20000, "baseRent": 5000, "monopolyRent": 10000,"rent1House": 20000, "rent2Houses": 60000, "rent3Houses": 140000, "rent4Houses": 170000, "hotelRent": 200000, "houseCost": 20000 }
+  ],
+
+  "stations": [
+    { "id": "AghaStation",          "boardPosition": 5,  "nameArabic": "محطة الجزائر – آغا",      "purchasePrice": 20000, "mortgageValue": 10000, "rent1Station": 2500, "rent2Stations": 5000, "rent3Stations": 10000, "rent4Stations": 20000 },
+    { "id": "ElHarrachStation",     "boardPosition": 15, "nameArabic": "محطة الحراش",             "purchasePrice": 20000, "mortgageValue": 10000, "rent1Station": 2500, "rent2Stations": 5000, "rent3Stations": 10000, "rent4Stations": 20000 },
+    { "id": "PlaceDesMartyrsMetro", "boardPosition": 25, "nameArabic": "محطة مترو ساحة الشهداء",  "purchasePrice": 20000, "mortgageValue": 10000, "rent1Station": 2500, "rent2Stations": 5000, "rent3Stations": 10000, "rent4Stations": 20000 },
+    { "id": "BabEzzouarTramway",    "boardPosition": 35, "nameArabic": "محطة ترامواي باب الزوار", "purchasePrice": 20000, "mortgageValue": 10000, "rent1Station": 2500, "rent2Stations": 5000, "rent3Stations": 10000, "rent4Stations": 20000 }
+  ],
+
+  "utilities": [
+    { "id": "Sonelgaz", "boardPosition": 12, "nameArabic": "سونلغاز", "purchasePrice": 15000, "mortgageValue": 7500 },
+    { "id": "SEAAL",    "boardPosition": 28, "nameArabic": "سيال",    "purchasePrice": 15000, "mortgageValue": 7500 }
+  ],
+
+  "chanceDeck": [
+    { "id": "CH01", "textArabic": "تقدّم إلى انطلق – الجزائر العاصمة. اقبض المكافأة.",                                      "effectType": "MoveToPosition",        "target": 0 },
+    { "id": "CH02", "textArabic": "تقدّم إلى محطة الجزائر – آغا. إذا مررت بـ GO اقبض المكافأة.",                            "effectType": "MoveToPosition",        "target": 5 },
+    { "id": "CH03", "textArabic": "تقدّم إلى القصبة. إذا مررت بـ GO اقبض المكافأة.",                                        "effectType": "MoveToPosition",        "target": 9 },
+    { "id": "CH04", "textArabic": "تقدّم إلى أقرب محطة نقل. إذا كانت مملوكة، ادفع ضعف الإيجار المعتاد.",                     "effectType": "MoveToNearestStation",  "rentMultiplier": 2 },
+    { "id": "CH05", "textArabic": "تقدّم إلى أقرب مرفق (سونلغاز أو سيال). إذا كان مملوكًا، ادفع بحسب 10 أضعاف مجموع النرد.", "effectType": "MoveToNearestUtility",  "multiplierOverride": 10 },
+    { "id": "CH06", "textArabic": "ارجع 3 مربعات إلى الوراء.",                                                             "effectType": "MoveRelative",          "delta": -3 },
+    { "id": "CH07", "textArabic": "اذهب إلى سجن الحراش مباشرة. لا تمر بـ GO ولا تقبض المكافأة.",                             "effectType": "GoToJail" },
+    { "id": "CH08", "textArabic": "بطاقة الإفراج من السجن — احتفظ بها حتى تستخدمها أو تتاجر بها.",                          "effectType": "GetOutOfJailFree" },
+    { "id": "CH09", "textArabic": "البنك يدفع لك أرباح أسهم بقيمة 5,000 دج.",                                              "effectType": "CollectFromBank",       "amount": 5000 },
+    { "id": "CH10", "textArabic": "غرامة مخالفة سير: ادفع 1,500 دج للبنك.",                                                "effectType": "PayToBank",             "amount": 1500 },
+    { "id": "CH11", "textArabic": "مسابقة رياضية على مستوى العاصمة — اقبض 10,000 دج من البنك.",                            "effectType": "CollectFromBank",       "amount": 10000 },
+    { "id": "CH12", "textArabic": "فوترة صيانة الطرقات: ادفع 400 دج عن كل منزل و 1,150 دج عن كل فندق تملكه.",              "effectType": "PropertyRepairs",       "perHouse": 400, "perHotel": 1150 },
+    { "id": "CH13", "textArabic": "تقدّم إلى حيدرة. إذا مررت بـ GO اقبض المكافأة.",                                         "effectType": "MoveToPosition",        "target": 37 },
+    { "id": "CH14", "textArabic": "تم انتخابك رئيسًا لجمعية الحي: ادفع لكل لاعب 2,000 دج.",                                  "effectType": "PayEachPlayer",         "amount": 2000 },
+    { "id": "CH15", "textArabic": "تقدّم إلى محطة ترامواي باب الزوار. إذا مررت بـ GO اقبض المكافأة.",                       "effectType": "MoveToPosition",        "target": 35 },
+    { "id": "CH16", "textArabic": "حصلت على قرض بنكي صغير: اقبض 15,000 دج.",                                               "effectType": "CollectFromBank",       "amount": 15000 }
+  ],
+
+  "chestDeck": [
+    { "id": "CC01", "textArabic": "خطأ من البنك لصالحك: اقبض 20,000 دج.",                                           "effectType": "CollectFromBank",       "amount": 20000 },
+    { "id": "CC02", "textArabic": "فاتورة طبيب: ادفع 5,000 دج.",                                                    "effectType": "PayToBank",             "amount": 5000 },
+    { "id": "CC03", "textArabic": "تقدّم إلى انطلق – الجزائر العاصمة. اقبض المكافأة.",                               "effectType": "MoveToPosition",        "target": 0 },
+    { "id": "CC04", "textArabic": "بيع ممتلكات قديمة: اقبض 4,500 دج من البنك.",                                     "effectType": "CollectFromBank",       "amount": 4500 },
+    { "id": "CC05", "textArabic": "ضريبة عقارية: ادفع 500 دج عن كل منزل و 1,000 دج عن كل فندق تملكه.",              "effectType": "PropertyRepairs",       "perHouse": 500, "perHotel": 1000 },
+    { "id": "CC06", "textArabic": "بطاقة الإفراج من السجن — احتفظ بها حتى تستخدمها أو تتاجر بها.",                   "effectType": "GetOutOfJailFree" },
+    { "id": "CC07", "textArabic": "اذهب إلى سجن الحراش مباشرة. لا تمر بـ GO ولا تقبض المكافأة.",                      "effectType": "GoToJail" },
+    { "id": "CC08", "textArabic": "عيد ميلادك: اقبض 1,000 دج من كل لاعب.",                                            "effectType": "CollectFromEachPlayer", "amount": 1000 },
+    { "id": "CC09", "textArabic": "إرث عائلي: اقبض 25,000 دج من البنك.",                                            "effectType": "CollectFromBank",       "amount": 25000 },
+    { "id": "CC10", "textArabic": "مستحقات التأمين تُدفع: اقبض 3,000 دج من البنك.",                                  "effectType": "CollectFromBank",       "amount": 3000 },
+    { "id": "CC11", "textArabic": "رسوم مدرسية: ادفع 3,500 دج للبنك.",                                              "effectType": "PayToBank",             "amount": 3500 },
+    { "id": "CC12", "textArabic": "غرامة تلوث بيئي: ادفع 2,500 دج للبنك.",                                          "effectType": "PayToBank",             "amount": 2500 },
+    { "id": "CC13", "textArabic": "فزت بجائزة تشجيعية في مسابقة محلية: اقبض 2,000 دج.",                             "effectType": "CollectFromBank",       "amount": 2000 },
+    { "id": "CC14", "textArabic": "تبرّع خيري: ادفع لكل لاعب 500 دج.",                                                "effectType": "PayEachPlayer",         "amount": 500 },
+    { "id": "CC15", "textArabic": "استرداد ضريبي: اقبض 5,000 دج من البنك.",                                         "effectType": "CollectFromBank",       "amount": 5000 },
+    { "id": "CC16", "textArabic": "ارجع 3 مربعات إلى الوراء.",                                                      "effectType": "MoveRelative",          "delta": -3 }
+  ]
+}
