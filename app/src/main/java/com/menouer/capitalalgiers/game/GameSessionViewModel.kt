@@ -63,6 +63,25 @@ data class AuctionOffer(
 )
 
 /**
+ * One asset the active player owns, ready-to-render for the property
+ * manager screen (GameRules.md §13-16, §18). mortgageValue/unmortgageCost
+ * are always shown regardless of type, since stations/utilities can be
+ * mortgaged too (§18) even though only properties (group != null) can
+ * carry houses/hotels (§13).
+ */
+data class OwnedAssetSummary(
+    val assetId: AssetId,
+    val displayName: String,
+    val group: String?,
+    val houses: Int,
+    val hasHotel: Boolean,
+    val mortgaged: Boolean,
+    val mortgageValue: Int,
+    val unmortgageCost: Int,
+    val houseCost: Int?
+)
+
+/**
  * Owns the single authoritative [GameState] for the local hotseat prototype
  * (DevelopmentRoadmap.md M3). There is exactly one "host" here — this
  * ViewModel — since there's no networking involved; every RulesEngine call
@@ -251,6 +270,55 @@ class GameSessionViewModel : ViewModel() {
 
     private fun displayNameFor(playerId: PlayerId): String =
         _uiState.value?.playerNames?.get(playerId) ?: playerId
+
+    // --- Building & mortgages (GameRules.md §13-16, §18) ---
+    // No client-side pre-validation of even-building, group-completeness,
+    // mortgage-blocks-building, etc. — same approach as the rest of this
+    // ViewModel: the engine is the single source of truth for those rules,
+    // so an invalid tap just comes back as a lastRejection message rather
+    // than being silently disabled. The only client-side filtering here is
+    // trivial, state-only stuff (don't show "Unmortgage" on a asset that
+    // isn't mortgaged) that needs no rules knowledge to get right.
+
+    /** Every asset the active player currently owns, for the property manager screen. */
+    fun ownedAssetSummaries(): List<OwnedAssetSummary> {
+        val current = currentState() ?: return emptyList()
+        val playerId = current.activePlayerId
+        return current.assets.values
+            .filter { it.ownerId == playerId }
+            .sortedBy { asset -> current.config.spaces.firstOrNull { it.assetId == asset.id }?.index ?: Int.MAX_VALUE }
+            .map { asset ->
+                val propertyConfig = current.config.propertiesById[asset.id]
+                val mortgageValue = propertyConfig?.mortgageValue
+                    ?: current.config.stationsById[asset.id]?.mortgageValue
+                    ?: current.config.utilitiesById[asset.id]?.mortgageValue
+                    ?: 0
+                OwnedAssetSummary(
+                    assetId = asset.id,
+                    displayName = current.config.spaces.firstOrNull { it.assetId == asset.id }?.developerName ?: asset.id,
+                    group = propertyConfig?.group?.name,
+                    houses = asset.houses,
+                    hasHotel = asset.hasHotel,
+                    mortgaged = asset.mortgaged,
+                    mortgageValue = mortgageValue,
+                    unmortgageCost = mortgageValue + mortgageValue / 10,
+                    houseCost = propertyConfig?.houseCost
+                )
+            }
+    }
+
+    fun buildOnAsset(assetId: AssetId) = act { engine.build(it, it.activePlayerId, assetId) }
+
+    fun sellBuildingOnAsset(assetId: AssetId) = act { engine.sellBuilding(it, it.activePlayerId, assetId) }
+
+    fun mortgageAsset(assetId: AssetId) = act { engine.mortgage(it, it.activePlayerId, assetId) }
+
+    fun unmortgageAsset(assetId: AssetId) = act { engine.unmortgage(it, it.activePlayerId, assetId) }
+
+    private fun act(call: (GameState) -> EngineResult) {
+        val current = currentState() ?: return
+        applyAndChain(call(current))
+    }
 
     // --- Internal plumbing ---
 

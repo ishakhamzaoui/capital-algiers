@@ -86,6 +86,7 @@ fun BoardScreen(
     onDecline: () -> Unit,
     onPlaceBid: (Int) -> Unit,
     onPassAuction: () -> Unit,
+    onManageProperties: () -> Unit,
     onEndTurn: () -> Unit,
     onExit: () -> Unit,
     modifier: Modifier = Modifier
@@ -138,6 +139,7 @@ fun BoardScreen(
             onDecline = onDecline,
             onPlaceBid = onPlaceBid,
             onPassAuction = onPassAuction,
+            onManageProperties = onManageProperties,
             onEndTurn = onEndTurn,
             modifier = Modifier
                 .fillMaxWidth()
@@ -157,6 +159,7 @@ private fun TurnPanel(
     onDecline: () -> Unit,
     onPlaceBid: (Int) -> Unit,
     onPassAuction: () -> Unit,
+    onManageProperties: () -> Unit,
     onEndTurn: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -201,7 +204,10 @@ private fun TurnPanel(
 
                 TurnPhase.AWAITING_OPTIONAL_ACTIONS ->
                     PhaseRow("$activeName may act, or end the turn") {
-                        Button(onClick = onEndTurn) { Text("End turn") }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = onManageProperties) { Text("Manage properties") }
+                            Button(onClick = onEndTurn) { Text("End turn") }
+                        }
                     }
 
                 TurnPhase.IN_TRADE ->
