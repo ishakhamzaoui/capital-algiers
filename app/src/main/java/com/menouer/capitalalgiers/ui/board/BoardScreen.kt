@@ -8,11 +8,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.items as gridItems
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -25,10 +28,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.menouer.capitalalgiers.game.GameSessionUiState
+import com.menouer.capitalalgiers.game.PurchaseOffer
+import com.menouer.capitalalgiers.game.describe
 import com.menouer.economy_data.BoardSpace
 import com.menouer.economy_data.SpaceType
 import com.menouer.rules_engine.model.PlayerId
 import com.menouer.rules_engine.model.PlayerState
+import com.menouer.rules_engine.model.TurnPhase
 
 /** Distinguishing background tint per space type, purely for at-a-glance scanning (no group colors yet — that's M9's job). */
 private fun colorFor(type: SpaceType): Color = when (type) {
@@ -49,20 +56,30 @@ private val tokenColors = listOf(
 )
 
 /**
- * Bare-bones, throwaway-quality board render per DevelopmentRoadmap.md M3
+ * Bare-bones, throwaway-quality board screen per DevelopmentRoadmap.md M3
  * ("do not invest in visuals here, that's M6/M9"). Uses developerName
  * (Latin) as the on-screen label — RTL Arabic UI is explicitly out of scope
  * for this milestone (SRS §5/§6 belong to M6/M9).
+ *
+ * Session 2 adds the [TurnPanel]: roll, auto-resolved landing, buy/decline,
+ * a temporary all-pass auction skip (real bidding is Session 4), and end
+ * turn — everything needed to actually play through a turn end to end.
  */
 @Composable
 fun BoardScreen(
-    spaces: List<BoardSpace>,
-    players: List<PlayerState>,
-    playerNames: Map<PlayerId, String>,
-    activePlayerId: PlayerId,
+    uiState: GameSessionUiState,
+    lastRejection: String?,
+    purchaseOffer: PurchaseOffer?,
+    onRollDice: () -> Unit,
+    onBuy: () -> Unit,
+    onDecline: () -> Unit,
+    onSkipAuction: () -> Unit,
+    onEndTurn: () -> Unit,
     onExit: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val gameState = uiState.gameState
+
     Column(modifier = modifier.fillMaxSize().padding(16.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -74,28 +91,147 @@ fun BoardScreen(
         }
 
         Scoreboard(
-            players = players,
-            playerNames = playerNames,
-            activePlayerId = activePlayerId,
+            players = gameState.players,
+            playerNames = uiState.playerNames,
+            activePlayerId = gameState.activePlayerId,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(vertical = 8.dp)
         )
 
-        LazyVerticalGrid(
-            columns = GridCells.Fixed(4),
-            modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            items(spaces.sortedBy { it.index }, key = { it.index }) { space ->
-                BoardSpaceCell(
-                    space = space,
-                    occupants = players.filter { it.position == space.index },
-                    allPlayers = players
-                )
+        Box(modifier = Modifier.weight(1f)) {
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(4),
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                gridItems(gameState.config.spaces.sortedBy { it.index }, key = { it.index }) { space ->
+                    BoardSpaceCell(
+                        space = space,
+                        occupants = gameState.players.filter { it.position == space.index },
+                        allPlayers = gameState.players
+                    )
+                }
             }
         }
+
+        TurnPanel(
+            uiState = uiState,
+            lastRejection = lastRejection,
+            purchaseOffer = purchaseOffer,
+            onRollDice = onRollDice,
+            onBuy = onBuy,
+            onDecline = onDecline,
+            onSkipAuction = onSkipAuction,
+            onEndTurn = onEndTurn,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 8.dp)
+        )
+    }
+}
+
+@Composable
+private fun TurnPanel(
+    uiState: GameSessionUiState,
+    lastRejection: String?,
+    purchaseOffer: PurchaseOffer?,
+    onRollDice: () -> Unit,
+    onBuy: () -> Unit,
+    onDecline: () -> Unit,
+    onSkipAuction: () -> Unit,
+    onEndTurn: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val gameState = uiState.gameState
+    val activeName = uiState.playerNames[gameState.activePlayerId] ?: gameState.activePlayerId
+
+    Card(modifier = modifier) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            when (gameState.phase) {
+                TurnPhase.AWAITING_ROLL ->
+                    PhaseRow("$activeName's turn — roll the dice") { Button(onClick = onRollDice) { Text("Roll") } }
+
+                TurnPhase.AWAITING_JAIL_DECISION ->
+                    PhaseRow("$activeName is in jail — attempt to roll doubles") {
+                        Button(onClick = onRollDice) { Text("Roll") }
+                    }
+
+                TurnPhase.RESOLVING_LANDING ->
+                    Text("Resolving landing\u2026", style = MaterialTheme.typography.bodyMedium)
+
+                TurnPhase.AWAITING_PURCHASE_DECISION -> {
+                    if (purchaseOffer != null) {
+                        Text(
+                            "$activeName can buy ${purchaseOffer.displayName} for ${purchaseOffer.price} \u062F\u062C",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Row(
+                            modifier = Modifier.padding(top = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Button(onClick = onBuy) { Text("Buy") }
+                            Button(onClick = onDecline) { Text("Decline (go to auction)") }
+                        }
+                    }
+                }
+
+                TurnPhase.IN_AUCTION ->
+                    PhaseRow("Auction in progress \u2014 real bidding arrives in Session 4") {
+                        Button(onClick = onSkipAuction) { Text("Skip auction (all pass)") }
+                    }
+
+                TurnPhase.AWAITING_OPTIONAL_ACTIONS ->
+                    PhaseRow("$activeName may act, or end the turn") {
+                        Button(onClick = onEndTurn) { Text("End turn") }
+                    }
+
+                TurnPhase.IN_TRADE ->
+                    Text("A trade is pending (Session 6).", style = MaterialTheme.typography.bodyMedium)
+
+                TurnPhase.GAME_OVER -> {
+                    val winner = gameState.nonBankruptPlayers.firstOrNull()
+                    val winnerName = winner?.let { uiState.playerNames[it.id] ?: it.id } ?: "No one"
+                    Text("Game over \u2014 $winnerName wins!", style = MaterialTheme.typography.titleMedium)
+                }
+            }
+
+            if (lastRejection != null) {
+                Text(
+                    text = "Rejected: $lastRejection",
+                    color = Color(0xFFC92A2A),
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
+            }
+
+            val logLines = uiState.recentEvents.mapNotNull { it.describe(gameState.config, uiState.playerNames) }
+            if (logLines.isNotEmpty()) {
+                Text(
+                    text = "What just happened",
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.padding(top = 12.dp)
+                )
+                LazyColumn(modifier = Modifier.heightIn(max = 140.dp)) {
+                    items(logLines) { line ->
+                        Text(line, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PhaseRow(label: String, actions: @Composable () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+        actions()
     }
 }
 
