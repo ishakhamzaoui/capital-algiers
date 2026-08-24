@@ -17,17 +17,25 @@ import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.menouer.capitalalgiers.game.AuctionOffer
 import com.menouer.capitalalgiers.game.GameSessionUiState
 import com.menouer.capitalalgiers.game.PurchaseOffer
 import com.menouer.capitalalgiers.game.describe
@@ -62,18 +70,22 @@ private val tokenColors = listOf(
  * for this milestone (SRS §5/§6 belong to M6/M9).
  *
  * Session 2 adds the [TurnPanel]: roll, auto-resolved landing, buy/decline,
- * a temporary all-pass auction skip (real bidding is Session 4), and end
- * turn — everything needed to actually play through a turn end to end.
+ * and end turn. This pass adds real interactive auction bidding
+ * ([AuctionPanel]) in place of the earlier all-pass stand-in — everything
+ * needed to actually play through a turn end to end, including a declined
+ * purchase.
  */
 @Composable
 fun BoardScreen(
     uiState: GameSessionUiState,
     lastRejection: String?,
     purchaseOffer: PurchaseOffer?,
+    auctionOffer: AuctionOffer?,
     onRollDice: () -> Unit,
     onBuy: () -> Unit,
     onDecline: () -> Unit,
-    onSkipAuction: () -> Unit,
+    onPlaceBid: (Int) -> Unit,
+    onPassAuction: () -> Unit,
     onEndTurn: () -> Unit,
     onExit: () -> Unit,
     modifier: Modifier = Modifier
@@ -120,10 +132,12 @@ fun BoardScreen(
             uiState = uiState,
             lastRejection = lastRejection,
             purchaseOffer = purchaseOffer,
+            auctionOffer = auctionOffer,
             onRollDice = onRollDice,
             onBuy = onBuy,
             onDecline = onDecline,
-            onSkipAuction = onSkipAuction,
+            onPlaceBid = onPlaceBid,
+            onPassAuction = onPassAuction,
             onEndTurn = onEndTurn,
             modifier = Modifier
                 .fillMaxWidth()
@@ -137,10 +151,12 @@ private fun TurnPanel(
     uiState: GameSessionUiState,
     lastRejection: String?,
     purchaseOffer: PurchaseOffer?,
+    auctionOffer: AuctionOffer?,
     onRollDice: () -> Unit,
     onBuy: () -> Unit,
     onDecline: () -> Unit,
-    onSkipAuction: () -> Unit,
+    onPlaceBid: (Int) -> Unit,
+    onPassAuction: () -> Unit,
     onEndTurn: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -177,10 +193,11 @@ private fun TurnPanel(
                     }
                 }
 
-                TurnPhase.IN_AUCTION ->
-                    PhaseRow("Auction in progress \u2014 real bidding arrives in Session 4") {
-                        Button(onClick = onSkipAuction) { Text("Skip auction (all pass)") }
+                TurnPhase.IN_AUCTION -> {
+                    if (auctionOffer != null) {
+                        AuctionPanel(auctionOffer = auctionOffer, onPlaceBid = onPlaceBid, onPassAuction = onPassAuction)
                     }
+                }
 
                 TurnPhase.AWAITING_OPTIONAL_ACTIONS ->
                     PhaseRow("$activeName may act, or end the turn") {
@@ -232,6 +249,65 @@ private fun PhaseRow(label: String, actions: @Composable () -> Unit) {
     ) {
         Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
         actions()
+    }
+}
+
+/**
+ * GameRules.md §7's auction procedure: opening bids follow the configured
+ * minimum, each new bid must clear the configured increment over the
+ * current highest, and eligible players may bid or pass in turn (here,
+ * hotseat "turn" = seating order among whoever hasn't passed yet — see
+ * GameSessionViewModel.pendingAuctionOffer). The bid field is keyed on
+ * (assetId, currentBidderId, highestBid) so it resets to the new minimum
+ * every time control passes to a different player or the price moves,
+ * rather than carrying over a stale typed amount.
+ */
+@Composable
+private fun AuctionPanel(
+    auctionOffer: AuctionOffer,
+    onPlaceBid: (Int) -> Unit,
+    onPassAuction: () -> Unit
+) {
+    var bidText by remember(auctionOffer.assetId, auctionOffer.currentBidderId, auctionOffer.highestBid) {
+        mutableStateOf(auctionOffer.minimumValidBid.toString())
+    }
+
+    Column {
+        Text(
+            text = "Auction: ${auctionOffer.displayName}",
+            style = MaterialTheme.typography.titleSmall
+        )
+        Text(
+            text = if (auctionOffer.highestBidderName != null) {
+                "Highest bid: ${auctionOffer.highestBid} \u062F\u062C (${auctionOffer.highestBidderName})"
+            } else {
+                "No bids yet"
+            },
+            style = MaterialTheme.typography.bodyMedium
+        )
+        Text(
+            text = "${auctionOffer.currentBidderName}'s turn to bid or pass (minimum ${auctionOffer.minimumValidBid} \u062F\u062C)",
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(top = 4.dp)
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedTextField(
+                value = bidText,
+                onValueChange = { bidText = it.filter { c -> c.isDigit() } },
+                label = { Text("Bid amount") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.weight(1f)
+            )
+            Button(onClick = { bidText.toIntOrNull()?.let(onPlaceBid) }) { Text("Bid") }
+            Button(onClick = onPassAuction) { Text("Pass") }
+        }
     }
 }
 

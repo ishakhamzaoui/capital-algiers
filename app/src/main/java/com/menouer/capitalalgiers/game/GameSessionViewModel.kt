@@ -45,6 +45,24 @@ data class PurchaseOffer(
 )
 
 /**
+ * Everything the UI needs to render the current auction step: whose turn it
+ * is to act, the asset/current price, and the minimum a bid must clear.
+ * "Whose turn" is a hotseat-UI convenience the engine itself doesn't
+ * enforce (GameRules.md §7's AuctionState lets any eligible, non-passed
+ * bidder act in any order) — cycling through seating order one at a time is
+ * simply how a pass-and-play device hands control between players.
+ */
+data class AuctionOffer(
+    val assetId: AssetId,
+    val displayName: String,
+    val currentBidderId: PlayerId,
+    val currentBidderName: String,
+    val highestBid: Int,
+    val highestBidderName: String?,
+    val minimumValidBid: Int
+)
+
+/**
  * Owns the single authoritative [GameState] for the local hotseat prototype
  * (DevelopmentRoadmap.md M3). There is exactly one "host" here — this
  * ViewModel — since there's no networking involved; every RulesEngine call
@@ -185,34 +203,54 @@ class GameSessionViewModel : ViewModel() {
     }
 
     // --- Auctions (GameRules.md §7) ---
-    // TEMPORARY for this session: real interactive bidding is Session 4's job.
-    // This has every eligible bidder pass in turn, which the engine treats as a
-    // completely legitimate outcome ("If nobody makes a valid bid, the asset
-    // remains unowned") — it's not a shortcut around the rule, just a stand-in
-    // for a bid/pass UI that doesn't exist yet.
+    // The engine itself doesn't sequence bidders (any eligible, non-passed
+    // player may act at any time — that's a networked-lobby assumption from
+    // MultiplayerProtocol.md). For a pass-and-play device we still need SOME
+    // order to hand control to one player at a time, so pendingAuctionOffer()
+    // cycles through seating order (GameState.players) among whoever hasn't
+    // passed and isn't the current highest bidder.
 
-    fun skipAuctionWithAllPasses() {
-        var state = currentState() ?: return
-        if (state.phase != TurnPhase.IN_AUCTION) return
+    /** Everything the UI needs to render the current auction step, or null outside that phase. */
+    fun pendingAuctionOffer(): AuctionOffer? {
+        val current = currentState() ?: return null
+        val auction = current.pendingAuction ?: return null
+        val remaining = auction.eligibleBidders - auction.passedBidders - setOfNotNull(auction.highestBidderId)
+        val bidderId = current.players.map { it.id }.firstOrNull { it in remaining } ?: return null
 
-        val events = mutableListOf<GameEvent>()
-        while (state.phase == TurnPhase.IN_AUCTION) {
-            val auction = state.pendingAuction ?: break
-            val remaining = auction.eligibleBidders - auction.passedBidders - setOfNotNull(auction.highestBidderId)
-            val nextBidder = remaining.firstOrNull() ?: break
-            when (val result = engine.passAuction(state, nextBidder)) {
-                is EngineResult.Applied -> {
-                    events += result.events
-                    state = result.newState
-                }
-                is EngineResult.Rejected -> {
-                    _lastRejection.value = result.reason.name
-                    break
-                }
-            }
+        val minimumValid = if (auction.highestBidderId == null) {
+            current.config.constants.auctionMinimumBid
+        } else {
+            auction.highestBid + current.config.constants.auctionMinimumIncrement
         }
-        commit(state, events)
+
+        return AuctionOffer(
+            assetId = auction.assetId,
+            displayName = current.config.spaces.firstOrNull { it.assetId == auction.assetId }?.developerName
+                ?: auction.assetId,
+            currentBidderId = bidderId,
+            currentBidderName = displayNameFor(bidderId),
+            highestBid = auction.highestBid,
+            highestBidderName = auction.highestBidderId?.let { displayNameFor(it) },
+            minimumValidBid = minimumValid
+        )
     }
+
+    /** Places [amount] on behalf of whichever player pendingAuctionOffer() says is currently up. */
+    fun placeBid(amount: Int) {
+        val current = currentState() ?: return
+        val bidderId = pendingAuctionOffer()?.currentBidderId ?: return
+        applyAndChain(engine.placeBid(current, bidderId, amount))
+    }
+
+    /** Passes on behalf of whichever player pendingAuctionOffer() says is currently up. */
+    fun passCurrentBidder() {
+        val current = currentState() ?: return
+        val bidderId = pendingAuctionOffer()?.currentBidderId ?: return
+        applyAndChain(engine.passAuction(current, bidderId))
+    }
+
+    private fun displayNameFor(playerId: PlayerId): String =
+        _uiState.value?.playerNames?.get(playerId) ?: playerId
 
     // --- Internal plumbing ---
 
