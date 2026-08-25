@@ -37,9 +37,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.menouer.capitalalgiers.game.AuctionOffer
 import com.menouer.capitalalgiers.game.GameSessionUiState
+import com.menouer.capitalalgiers.game.PendingTradeSummary
 import com.menouer.capitalalgiers.game.PurchaseOffer
 import com.menouer.capitalalgiers.game.describe
 import com.menouer.economy_data.BoardSpace
+import com.menouer.economy_data.Deck
 import com.menouer.economy_data.SpaceType
 import com.menouer.rules_engine.model.PlayerId
 import com.menouer.rules_engine.model.PlayerState
@@ -87,6 +89,10 @@ fun BoardScreen(
     onPlaceBid: (Int) -> Unit,
     onPassAuction: () -> Unit,
     onManageProperties: () -> Unit,
+    onProposeTrade: () -> Unit,
+    tradeSummary: PendingTradeSummary?,
+    onAcceptTrade: () -> Unit,
+    onDeclineTrade: () -> Unit,
     onEndTurn: () -> Unit,
     onExit: () -> Unit,
     modifier: Modifier = Modifier
@@ -140,6 +146,10 @@ fun BoardScreen(
             onPlaceBid = onPlaceBid,
             onPassAuction = onPassAuction,
             onManageProperties = onManageProperties,
+            onProposeTrade = onProposeTrade,
+            tradeSummary = tradeSummary,
+            onAcceptTrade = onAcceptTrade,
+            onDeclineTrade = onDeclineTrade,
             onEndTurn = onEndTurn,
             modifier = Modifier
                 .fillMaxWidth()
@@ -160,6 +170,10 @@ private fun TurnPanel(
     onPlaceBid: (Int) -> Unit,
     onPassAuction: () -> Unit,
     onManageProperties: () -> Unit,
+    onProposeTrade: () -> Unit,
+    tradeSummary: PendingTradeSummary?,
+    onAcceptTrade: () -> Unit,
+    onDeclineTrade: () -> Unit,
     onEndTurn: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -206,12 +220,16 @@ private fun TurnPanel(
                     PhaseRow("$activeName may act, or end the turn") {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(onClick = onManageProperties) { Text("Manage properties") }
+                            Button(onClick = onProposeTrade) { Text("Propose trade") }
                             Button(onClick = onEndTurn) { Text("End turn") }
                         }
                     }
 
-                TurnPhase.IN_TRADE ->
-                    Text("A trade is pending (Session 6).", style = MaterialTheme.typography.bodyMedium)
+                TurnPhase.IN_TRADE -> {
+                    if (tradeSummary != null) {
+                        TradeResponsePanel(summary = tradeSummary, onAccept = onAcceptTrade, onDecline = onDeclineTrade)
+                    }
+                }
 
                 TurnPhase.GAME_OVER -> {
                     val winner = gameState.nonBankruptPlayers.firstOrNull()
@@ -315,6 +333,68 @@ private fun AuctionPanel(
             Button(onClick = onPassAuction) { Text("Pass") }
         }
     }
+}
+
+/**
+ * GameRules.md §17: the counterparty accepts or declines exactly as
+ * proposed — no counter-offer negotiation in V1's engine (proposeTrade
+ * takes a whole TradeProposal, there's no partial-modify path). Both sides
+ * see the same summary on this hotseat device; only onAccept/onDecline
+ * matter, since MultiplayerProtocol.md's "only the toPlayer may accept" is
+ * a networked-lobby concept this local prototype doesn't need to enforce.
+ */
+@Composable
+private fun TradeResponsePanel(
+    summary: PendingTradeSummary,
+    onAccept: () -> Unit,
+    onDecline: () -> Unit
+) {
+    Column {
+        Text(
+            text = "${summary.fromName} proposes a trade with ${summary.toName}",
+            style = MaterialTheme.typography.titleSmall
+        )
+        Text(
+            text = "${summary.fromName} offers: " + describeTradeSide(
+                cash = summary.offeredCash,
+                assets = summary.offeredAssetNames,
+                goojf = summary.offeredGoojf
+            ),
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(top = 4.dp)
+        )
+        Text(
+            text = "${summary.fromName} wants: " + describeTradeSide(
+                cash = summary.requestedCash,
+                assets = summary.requestedAssetNames,
+                goojf = summary.requestedGoojf
+            ),
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(top = 4.dp)
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Button(onClick = onAccept) { Text("Accept") }
+            Button(onClick = onDecline) { Text("Decline") }
+        }
+    }
+}
+
+private fun describeTradeSide(cash: Int, assets: List<String>, goojf: List<Deck>): String {
+    val parts = mutableListOf<String>()
+    if (cash > 0) parts += "$cash \u062F\u062C"
+    parts += assets
+    parts += goojf.map { deck ->
+        when (deck) {
+            Deck.CHANCE -> "Chance GOOJF card"
+            Deck.CAPITAL_CHEST -> "Community Chest GOOJF card"
+        }
+    }
+    return if (parts.isEmpty()) "nothing" else parts.joinToString(", ")
 }
 
 @Composable

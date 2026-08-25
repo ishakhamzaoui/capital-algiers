@@ -15,29 +15,36 @@ import com.menouer.capitalalgiers.game.GameSessionViewModel
 import com.menouer.capitalalgiers.ui.board.BoardScreen
 import com.menouer.capitalalgiers.ui.properties.PropertyManagerDialog
 import com.menouer.capitalalgiers.ui.setup.SetupScreen
+import com.menouer.capitalalgiers.ui.trade.TradeProposalDialog
+import com.menouer.rules_engine.model.TurnPhase
 
 /**
  * The app's entire screen graph: no game yet -> SetupScreen; game started ->
- * BoardScreen, with an optional PropertyManagerDialog overlay. A plain
- * null-check switch rather than navigation-compose, since M3 is explicitly a
- * throwaway-quality prototype with a tiny, linear screen flow — adding a
- * navigation library isn't earning its cost here.
+ * BoardScreen, with optional PropertyManagerDialog / TradeProposalDialog
+ * overlays. A plain null-check switch rather than navigation-compose, since
+ * M3 is explicitly a throwaway-quality prototype with a tiny, linear screen
+ * flow — adding a navigation library isn't earning its cost here.
  *
- * pendingPurchaseOffer()/pendingAuctionOffer()/ownedAssetSummaries() and
- * lastRejection are read directly from the ViewModel on every recomposition
- * (cheap, pure derivations) rather than being folded into GameSessionUiState
- * itself, since they're presentation concerns derived FROM the state rather
- * than part of the authoritative state the engine owns.
+ * pendingPurchaseOffer()/pendingAuctionOffer()/ownedAssetSummaries()/
+ * tradeBuilderContext()/pendingTradeSummary() and lastRejection are read
+ * directly from the ViewModel on every recomposition (cheap, pure
+ * derivations) rather than being folded into GameSessionUiState itself,
+ * since they're presentation concerns derived FROM the state rather than
+ * part of the authoritative state the engine owns.
  *
- * showPropertyManager is pure UI navigation state (which overlay is showing),
- * not game state — it never affects GameState or TurnPhase, so it lives here
- * as local Compose state rather than in the ViewModel.
+ * showPropertyManager/showTradeProposal are pure UI navigation state (which
+ * overlay is showing), not game state — they never affect GameState or
+ * TurnPhase, so they live here as local Compose state rather than in the
+ * ViewModel. showTradeProposal is force-closed once the engine actually
+ * moves phase to IN_TRADE (a real proposal was accepted by the engine), so
+ * the response panel underneath becomes visible instead of the stale editor.
  */
 @Composable
 fun CapitalAlgiersApp(viewModel: GameSessionViewModel = viewModel()) {
     val uiState by viewModel.uiState.collectAsState()
     val lastRejection by viewModel.lastRejection.collectAsState()
     var showPropertyManager by remember { mutableStateOf(false) }
+    var showTradeProposal by remember { mutableStateOf(false) }
 
     Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
         val current = uiState
@@ -47,6 +54,10 @@ fun CapitalAlgiersApp(viewModel: GameSessionViewModel = viewModel()) {
                 modifier = Modifier.padding(innerPadding)
             )
         } else {
+            if (current.gameState.phase == TurnPhase.IN_TRADE) {
+                showTradeProposal = false
+            }
+
             BoardScreen(
                 uiState = current,
                 lastRejection = lastRejection,
@@ -58,6 +69,10 @@ fun CapitalAlgiersApp(viewModel: GameSessionViewModel = viewModel()) {
                 onPlaceBid = { amount -> viewModel.placeBid(amount) },
                 onPassAuction = { viewModel.passCurrentBidder() },
                 onManageProperties = { showPropertyManager = true },
+                onProposeTrade = { showTradeProposal = true },
+                tradeSummary = viewModel.pendingTradeSummary(),
+                onAcceptTrade = { viewModel.respondToTrade(accept = true) },
+                onDeclineTrade = { viewModel.respondToTrade(accept = false) },
                 onEndTurn = { viewModel.endTurn() },
                 onExit = { viewModel.exitToSetup() },
                 modifier = Modifier.padding(innerPadding)
@@ -73,6 +88,29 @@ fun CapitalAlgiersApp(viewModel: GameSessionViewModel = viewModel()) {
                     onUnmortgage = { assetId -> viewModel.unmortgageAsset(assetId) },
                     onClose = { showPropertyManager = false }
                 )
+            }
+
+            if (showTradeProposal) {
+                val builderContext = viewModel.tradeBuilderContext()
+                if (builderContext != null) {
+                    TradeProposalDialog(
+                        context = builderContext,
+                        counterpartyContextFor = { playerId -> viewModel.counterpartyTradeContext(playerId) },
+                        onPropose = { toPlayerId, offeredCash, requestedCash, offeredAssets, requestedAssets, offeredGoojf, requestedGoojf ->
+                            viewModel.proposeTrade(
+                                toPlayerId,
+                                offeredCash,
+                                requestedCash,
+                                offeredAssets,
+                                requestedAssets,
+                                offeredGoojf,
+                                requestedGoojf
+                            )
+                            showTradeProposal = false
+                        },
+                        onClose = { showTradeProposal = false }
+                    )
+                }
             }
         }
     }

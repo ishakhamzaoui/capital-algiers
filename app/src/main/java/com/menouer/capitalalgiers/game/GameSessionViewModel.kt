@@ -2,6 +2,7 @@ package com.menouer.capitalalgiers.game
 
 import androidx.lifecycle.ViewModel
 import com.menouer.economy_data.BoardConfig
+import com.menouer.economy_data.Deck
 import com.menouer.economy_data.EconomyConfigLoader
 import com.menouer.economy_data.EconomyConfigValidator
 import com.menouer.rules_engine.RulesEngine
@@ -14,6 +15,7 @@ import com.menouer.rules_engine.model.GameEvent
 import com.menouer.rules_engine.model.GameState
 import com.menouer.rules_engine.model.PlayerId
 import com.menouer.rules_engine.model.PlayerState
+import com.menouer.rules_engine.model.TradeProposal
 import com.menouer.rules_engine.model.TurnPhase
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -79,6 +81,50 @@ data class OwnedAssetSummary(
     val mortgageValue: Int,
     val unmortgageCost: Int,
     val houseCost: Int?
+)
+
+/** A player the active player could propose a trade to, or the other side of a pending trade. */
+data class TradeParty(val playerId: PlayerId, val name: String)
+
+/** One tradeable asset offered by whichever side owns it. */
+data class TradeAssetOption(val assetId: AssetId, val displayName: String)
+
+/**
+ * Everything the trade-proposal screen needs: who you could trade with, and
+ * — once a counterparty is chosen — what's available from each side.
+ * Excludes any asset whose property GROUP currently carries a building
+ * (GameRules.md §17: "Properties in a group containing buildings cannot be
+ * transferred until required buildings in that group have been sold") and
+ * excludes bankrupt players entirely — both are plain state reads, not rule
+ * interpretation, so filtering them here follows the same "trivial
+ * state-only filtering only" line the rest of this ViewModel draws.
+ */
+data class TradeBuilderContext(
+    val fromPlayerId: PlayerId,
+    val fromName: String,
+    val fromBalance: Int,
+    val fromTradeableAssets: List<TradeAssetOption>,
+    val fromGoojfDecks: List<Deck>,
+    val counterparties: List<TradeParty>
+)
+
+data class CounterpartyTradeContext(
+    val toPlayerId: PlayerId,
+    val toBalance: Int,
+    val toTradeableAssets: List<TradeAssetOption>,
+    val toGoojfDecks: List<Deck>
+)
+
+/** A pending trade awaiting the counterparty's accept/decline (GameRules.md §17). */
+data class PendingTradeSummary(
+    val fromName: String,
+    val toName: String,
+    val offeredCash: Int,
+    val requestedCash: Int,
+    val offeredAssetNames: List<String>,
+    val requestedAssetNames: List<String>,
+    val offeredGoojf: List<Deck>,
+    val requestedGoojf: List<Deck>
 )
 
 /**
@@ -319,6 +365,100 @@ class GameSessionViewModel : ViewModel() {
         val current = currentState() ?: return
         applyAndChain(call(current))
     }
+
+    // --- Trading (GameRules.md §17) ---
+    // RulesEngineImpl.proposeTrade allows a trade to be proposed in any
+    // non-GAME_OVER phase (real trading isn't restricted to your own turn),
+    // but this hotseat UI only surfaces "Propose trade" during the active
+    // player's own AWAITING_OPTIONAL_ACTIONS window (BoardScreen's turn
+    // panel) — a UX choice to keep the pass-and-play flow predictable, not
+    // an engine restriction.
+
+    /** Static context for building a new trade proposal: who's offering, who they could trade with. */
+    fun tradeBuilderContext(): TradeBuilderContext? {
+        val current = currentState() ?: return null
+        val fromId = current.activePlayerId
+        return TradeBuilderContext(
+            fromPlayerId = fromId,
+            fromName = displayNameFor(fromId),
+            fromBalance = current.player(fromId).balance,
+            fromTradeableAssets = tradeableAssetsOwnedBy(current, fromId),
+            fromGoojfDecks = current.player(fromId).getOutOfJailCards,
+            counterparties = current.nonBankruptPlayers
+                .filter { it.id != fromId }
+                .map { TradeParty(it.id, displayNameFor(it.id)) }
+        )
+    }
+
+    /** What a chosen counterparty brings to the table, fetched once picked in the trade-proposal UI. */
+    fun counterpartyTradeContext(toPlayerId: PlayerId): CounterpartyTradeContext? {
+        val current = currentState() ?: return null
+        val to = current.playerOrNull(toPlayerId) ?: return null
+        return CounterpartyTradeContext(
+            toPlayerId = toPlayerId,
+            toBalance = to.balance,
+            toTradeableAssets = tradeableAssetsOwnedBy(current, toPlayerId),
+            toGoojfDecks = to.getOutOfJailCards
+        )
+    }
+
+    private fun tradeableAssetsOwnedBy(state: GameState, playerId: PlayerId): List<TradeAssetOption> =
+        state.assets.values
+            .filter { it.ownerId == playerId }
+            .filterNot { groupHasBuildings(state, it.id) }
+            .sortedBy { asset -> state.config.spaces.firstOrNull { it.assetId == asset.id }?.index ?: Int.MAX_VALUE }
+            .map { TradeAssetOption(it.id, state.config.spaces.firstOrNull { s -> s.assetId == it.id }?.developerName ?: it.id) }
+
+    private fun groupHasBuildings(state: GameState, assetId: AssetId): Boolean {
+        val propertyConfig = state.config.propertiesById[assetId] ?: return false
+        return state.config.propertiesInGroup(propertyConfig.group).any {
+            val asset = state.assets.getValue(it.id)
+            asset.houses > 0 || asset.hasHotel
+        }
+    }
+
+    /** Proposes a trade from the active player to [toPlayerId]. Pauses the game (phase -> IN_TRADE) until answered. */
+    fun proposeTrade(
+        toPlayerId: PlayerId,
+        offeredCash: Int,
+        requestedCash: Int,
+        offeredAssets: Set<AssetId>,
+        requestedAssets: Set<AssetId>,
+        offeredGoojf: List<Deck>,
+        requestedGoojf: List<Deck>
+    ) {
+        val current = currentState() ?: return
+        val proposal = TradeProposal(
+            fromPlayerId = current.activePlayerId,
+            toPlayerId = toPlayerId,
+            offeredCash = offeredCash,
+            offeredAssets = offeredAssets,
+            offeredGetOutOfJailCards = offeredGoojf,
+            requestedCash = requestedCash,
+            requestedAssets = requestedAssets,
+            requestedGetOutOfJailCards = requestedGoojf
+        )
+        applyAndChain(engine.proposeTrade(current, proposal))
+    }
+
+    /** Everything the response screen needs to show the pending trade, or null outside IN_TRADE. */
+    fun pendingTradeSummary(): PendingTradeSummary? {
+        val current = currentState() ?: return null
+        val trade = current.pendingTrade?.proposal ?: return null
+        fun assetName(id: AssetId) = current.config.spaces.firstOrNull { it.assetId == id }?.developerName ?: id
+        return PendingTradeSummary(
+            fromName = displayNameFor(trade.fromPlayerId),
+            toName = displayNameFor(trade.toPlayerId),
+            offeredCash = trade.offeredCash,
+            requestedCash = trade.requestedCash,
+            offeredAssetNames = trade.offeredAssets.map(::assetName),
+            requestedAssetNames = trade.requestedAssets.map(::assetName),
+            offeredGoojf = trade.offeredGetOutOfJailCards,
+            requestedGoojf = trade.requestedGetOutOfJailCards
+        )
+    }
+
+    fun respondToTrade(accept: Boolean) = act { engine.resolveTrade(it, accept) }
 
     // --- Internal plumbing ---
 
