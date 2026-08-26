@@ -14,30 +14,34 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.menouer.capitalalgiers.game.GameSessionViewModel
 import com.menouer.capitalalgiers.ui.board.BoardScreen
 import com.menouer.capitalalgiers.ui.properties.PropertyManagerDialog
+import com.menouer.capitalalgiers.ui.results.MatchResultsScreen
 import com.menouer.capitalalgiers.ui.setup.SetupScreen
 import com.menouer.capitalalgiers.ui.trade.TradeProposalDialog
 import com.menouer.rules_engine.model.TurnPhase
 
 /**
- * The app's entire screen graph: no game yet -> SetupScreen; game started ->
- * BoardScreen, with optional PropertyManagerDialog / TradeProposalDialog
- * overlays. A plain null-check switch rather than navigation-compose, since
- * M3 is explicitly a throwaway-quality prototype with a tiny, linear screen
- * flow — adding a navigation library isn't earning its cost here.
+ * The app's entire screen graph: no game yet -> SetupScreen; game over ->
+ * MatchResultsScreen; otherwise -> BoardScreen, with optional
+ * PropertyManagerDialog / TradeProposalDialog overlays. A plain phase-check
+ * switch rather than navigation-compose, since M3 is explicitly a
+ * throwaway-quality prototype with a tiny, linear screen flow — adding a
+ * navigation library isn't earning its cost here.
  *
  * pendingPurchaseOffer()/pendingAuctionOffer()/activePlayerJailOptions()/
- * ownedAssetSummaries()/tradeBuilderContext()/pendingTradeSummary() and
- * lastRejection are read directly from the ViewModel on every recomposition
- * (cheap, pure derivations) rather than being folded into GameSessionUiState
- * itself, since they're presentation concerns derived FROM the state rather
- * than part of the authoritative state the engine owns.
+ * ownedAssetSummaries()/tradeBuilderContext()/pendingTradeSummary()/
+ * finalStandings() and lastRejection are read directly from the ViewModel on
+ * every recomposition (cheap, pure derivations) rather than being folded
+ * into GameSessionUiState itself, since they're presentation concerns
+ * derived FROM the state rather than part of the authoritative state the
+ * engine owns.
  *
  * showPropertyManager/showTradeProposal are pure UI navigation state (which
  * overlay is showing), not game state — they never affect GameState or
  * TurnPhase, so they live here as local Compose state rather than in the
- * ViewModel. showTradeProposal is force-closed once the engine actually
- * moves phase to IN_TRADE (a real proposal was accepted by the engine), so
- * the response panel underneath becomes visible instead of the stale editor.
+ * ViewModel. Both are force-closed once the engine moves phase away from
+ * where they make sense (IN_TRADE for the proposal editor, GAME_OVER for
+ * either overlay), so a stale editor never lingers over a screen it no
+ * longer applies to.
  */
 @Composable
 fun CapitalAlgiersApp(viewModel: GameSessionViewModel = viewModel()) {
@@ -53,6 +57,17 @@ fun CapitalAlgiersApp(viewModel: GameSessionViewModel = viewModel()) {
                 onStartGame = { names -> viewModel.startNewGame(names) },
                 modifier = Modifier.padding(innerPadding)
             )
+        } else if (current.gameState.phase == TurnPhase.GAME_OVER) {
+            showPropertyManager = false
+            showTradeProposal = false
+            val standings = viewModel.finalStandings()
+            if (standings != null) {
+                MatchResultsScreen(
+                    standings = standings,
+                    onNewGame = { viewModel.exitToSetup() },
+                    modifier = Modifier.padding(innerPadding)
+                )
+            }
         } else {
             if (current.gameState.phase == TurnPhase.IN_TRADE) {
                 showTradeProposal = false

@@ -142,6 +142,21 @@ data class PendingTradeSummary(
 )
 
 /**
+ * One player's final line on the match-results screen (GameRules.md §19-20,
+ * SRS.md FR-013's "Match results" screen). isWinner is simply "the one
+ * non-bankrupt player left" (GameState.nonBankruptPlayers, §20) — GAME_OVER
+ * is only ever reached with exactly one such player in V1 (no draws, no
+ * timer variant per DecisionLog.md #7).
+ */
+data class FinalStanding(
+    val playerId: PlayerId,
+    val name: String,
+    val balance: Int,
+    val bankrupt: Boolean,
+    val isWinner: Boolean
+)
+
+/**
  * Owns the single authoritative [GameState] for the local hotseat prototype
  * (DevelopmentRoadmap.md M3). There is exactly one "host" here — this
  * ViewModel — since there's no networking involved; every RulesEngine call
@@ -499,6 +514,24 @@ class GameSessionViewModel : ViewModel() {
     }
 
     fun respondToTrade(accept: Boolean) = act { engine.resolveTrade(it, accept) }
+
+    // --- Match results (GameRules.md §19-20) ---
+
+    /** Final standings for the match-results screen, or null before GAME_OVER. */
+    fun finalStandings(): List<FinalStanding>? {
+        val current = currentState() ?: return null
+        if (current.phase != TurnPhase.GAME_OVER) return null
+        val winnerId = current.nonBankruptPlayers.firstOrNull()?.id
+        return current.players.map { p ->
+            FinalStanding(
+                playerId = p.id,
+                name = displayNameFor(p.id),
+                balance = p.balance,
+                bankrupt = p.bankrupt,
+                isWinner = p.id == winnerId
+            )
+        }
+    }
 
     // --- Internal plumbing ---
 
