@@ -5,6 +5,7 @@ import com.menouer.economy_data.BoardConfig
 import com.menouer.economy_data.Deck
 import com.menouer.economy_data.EconomyConfigLoader
 import com.menouer.economy_data.EconomyConfigValidator
+import com.menouer.rules_engine.JailAction
 import com.menouer.rules_engine.RulesEngine
 import com.menouer.rules_engine.RulesEngineImpl
 import com.menouer.rules_engine.dice.SeededDiceSource
@@ -44,6 +45,19 @@ data class PurchaseOffer(
     val assetId: AssetId,
     val displayName: String,
     val price: Int
+)
+
+/**
+ * What the active player can do about being in jail besides rolling for
+ * doubles (GameRules.md §12): pay the fine voluntarily, or use a held Get
+ * Out of Jail Free card. canAffordFine is a plain balance check the engine
+ * itself re-verifies (payFineVoluntarily rejects with INSUFFICIENT_FUNDS if
+ * wrong) — shown here only so the UI can grey out an obviously-doomed tap.
+ */
+data class JailOptions(
+    val fineAmount: Int,
+    val canAffordFine: Boolean,
+    val heldGoojfDecks: List<Deck>
 )
 
 /**
@@ -217,8 +231,8 @@ class GameSessionViewModel : ViewModel() {
      * Rolls for the active player. Valid in both AWAITING_ROLL (normal turn
      * start) and AWAITING_JAIL_DECISION (a jailed player attempting doubles,
      * or the forced turn-3 roll) — RulesEngine.applyRoll itself dispatches on
-     * phase, so one button covers both. PAY_FINE / USE_GET_OUT_OF_JAIL_CARD
-     * as alternatives to rolling arrive in the dedicated jail-actions session.
+     * phase, so one button covers both. See payJailFineVoluntarily() /
+     * useGetOutOfJailCard() below for the other two jail exits.
      */
     fun rollDice() {
         val current = currentState() ?: return
@@ -236,6 +250,32 @@ class GameSessionViewModel : ViewModel() {
         val current = currentState() ?: return
         applyAndChain(engine.endTurn(current))
     }
+
+    // --- Jail actions (GameRules.md §12) ---
+    // Rolling for doubles is already covered by rollDice() above (applyRoll
+    // dispatches to the jail-roll path itself when phase is
+    // AWAITING_JAIL_DECISION). These two cover the other exits: paying the
+    // fine voluntarily, or using a held Get Out of Jail Free card. Both
+    // release the player but grant a normal roll THIS SAME TURN rather than
+    // moving immediately — that's TechnicalSpecification.md §5's point about
+    // keeping the voluntary-payment and forced-turn-3 paths distinct.
+
+    /** Whether the active player is jailed and can act via jailAction (as opposed to only rolling). */
+    fun activePlayerJailOptions(): JailOptions? {
+        val current = currentState() ?: return null
+        if (current.phase != TurnPhase.AWAITING_JAIL_DECISION) return null
+        val player = current.activePlayer
+        if (!player.inJail) return null
+        return JailOptions(
+            fineAmount = current.config.constants.jailFine,
+            canAffordFine = player.balance >= current.config.constants.jailFine,
+            heldGoojfDecks = player.getOutOfJailCards.distinct()
+        )
+    }
+
+    fun payJailFineVoluntarily() = act { engine.jailAction(it, it.activePlayerId, JailAction.PAY_FINE) }
+
+    fun useGetOutOfJailCard() = act { engine.jailAction(it, it.activePlayerId, JailAction.USE_GET_OUT_OF_JAIL_CARD) }
 
     // --- Purchase decision (GameRules.md §7) ---
 

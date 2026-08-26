@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.menouer.capitalalgiers.game.AuctionOffer
 import com.menouer.capitalalgiers.game.GameSessionUiState
+import com.menouer.capitalalgiers.game.JailOptions
 import com.menouer.capitalalgiers.game.PendingTradeSummary
 import com.menouer.capitalalgiers.game.PurchaseOffer
 import com.menouer.capitalalgiers.game.describe
@@ -83,7 +84,10 @@ fun BoardScreen(
     lastRejection: String?,
     purchaseOffer: PurchaseOffer?,
     auctionOffer: AuctionOffer?,
+    jailOptions: JailOptions?,
     onRollDice: () -> Unit,
+    onPayFine: () -> Unit,
+    onUseGoojfCard: () -> Unit,
     onBuy: () -> Unit,
     onDecline: () -> Unit,
     onPlaceBid: (Int) -> Unit,
@@ -140,7 +144,10 @@ fun BoardScreen(
             lastRejection = lastRejection,
             purchaseOffer = purchaseOffer,
             auctionOffer = auctionOffer,
+            jailOptions = jailOptions,
             onRollDice = onRollDice,
+            onPayFine = onPayFine,
+            onUseGoojfCard = onUseGoojfCard,
             onBuy = onBuy,
             onDecline = onDecline,
             onPlaceBid = onPlaceBid,
@@ -164,7 +171,10 @@ private fun TurnPanel(
     lastRejection: String?,
     purchaseOffer: PurchaseOffer?,
     auctionOffer: AuctionOffer?,
+    jailOptions: JailOptions?,
     onRollDice: () -> Unit,
+    onPayFine: () -> Unit,
+    onUseGoojfCard: () -> Unit,
     onBuy: () -> Unit,
     onDecline: () -> Unit,
     onPlaceBid: (Int) -> Unit,
@@ -186,10 +196,15 @@ private fun TurnPanel(
                 TurnPhase.AWAITING_ROLL ->
                     PhaseRow("$activeName's turn — roll the dice") { Button(onClick = onRollDice) { Text("Roll") } }
 
-                TurnPhase.AWAITING_JAIL_DECISION ->
-                    PhaseRow("$activeName is in jail — attempt to roll doubles") {
-                        Button(onClick = onRollDice) { Text("Roll") }
-                    }
+                TurnPhase.AWAITING_JAIL_DECISION -> {
+                    JailPanel(
+                        activeName = activeName,
+                        jailOptions = jailOptions,
+                        onRollDice = onRollDice,
+                        onPayFine = onPayFine,
+                        onUseGoojfCard = onUseGoojfCard
+                    )
+                }
 
                 TurnPhase.RESOLVING_LANDING ->
                     Text("Resolving landing\u2026", style = MaterialTheme.typography.bodyMedium)
@@ -331,6 +346,45 @@ private fun AuctionPanel(
             )
             Button(onClick = { bidText.toIntOrNull()?.let(onPlaceBid) }) { Text("Bid") }
             Button(onClick = onPassAuction) { Text("Pass") }
+        }
+    }
+}
+
+/**
+ * GameRules.md §12: a jailed player can attempt doubles (Roll — already
+ * wired through onRollDice since applyRoll dispatches on phase itself), pay
+ * the fine voluntarily, or use a held Get Out of Jail Free card. Pay/use are
+ * only shown when jailOptions says they're structurally possible (holds a
+ * card at all; fine affordability just greys the button, per
+ * GameSessionViewModel.JailOptions's doc comment) — the engine still has the
+ * final say via lastRejection if something's off.
+ */
+@Composable
+private fun JailPanel(
+    activeName: String,
+    jailOptions: JailOptions?,
+    onRollDice: () -> Unit,
+    onPayFine: () -> Unit,
+    onUseGoojfCard: () -> Unit
+) {
+    Column {
+        Text(
+            "$activeName is in jail \u2014 attempt doubles, pay the fine, or use a card",
+            style = MaterialTheme.typography.bodyMedium
+        )
+        Row(
+            modifier = Modifier.padding(top = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Button(onClick = onRollDice) { Text("Roll for doubles") }
+            if (jailOptions != null) {
+                Button(onClick = onPayFine, enabled = jailOptions.canAffordFine) {
+                    Text("Pay fine (${jailOptions.fineAmount} \u062F\u062C)")
+                }
+                if (jailOptions.heldGoojfDecks.isNotEmpty()) {
+                    Button(onClick = onUseGoojfCard) { Text("Use GOOJF card") }
+                }
+            }
         }
     }
 }

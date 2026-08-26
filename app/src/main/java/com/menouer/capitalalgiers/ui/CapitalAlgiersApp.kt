@@ -25,12 +25,12 @@ import com.menouer.rules_engine.model.TurnPhase
  * M3 is explicitly a throwaway-quality prototype with a tiny, linear screen
  * flow — adding a navigation library isn't earning its cost here.
  *
- * pendingPurchaseOffer()/pendingAuctionOffer()/ownedAssetSummaries()/
- * tradeBuilderContext()/pendingTradeSummary() and lastRejection are read
- * directly from the ViewModel on every recomposition (cheap, pure
- * derivations) rather than being folded into GameSessionUiState itself,
- * since they're presentation concerns derived FROM the state rather than
- * part of the authoritative state the engine owns.
+ * pendingPurchaseOffer()/pendingAuctionOffer()/activePlayerJailOptions()/
+ * ownedAssetSummaries()/tradeBuilderContext()/pendingTradeSummary() and
+ * lastRejection are read directly from the ViewModel on every recomposition
+ * (cheap, pure derivations) rather than being folded into GameSessionUiState
+ * itself, since they're presentation concerns derived FROM the state rather
+ * than part of the authoritative state the engine owns.
  *
  * showPropertyManager/showTradeProposal are pure UI navigation state (which
  * overlay is showing), not game state — they never affect GameState or
@@ -63,7 +63,10 @@ fun CapitalAlgiersApp(viewModel: GameSessionViewModel = viewModel()) {
                 lastRejection = lastRejection,
                 purchaseOffer = viewModel.pendingPurchaseOffer(),
                 auctionOffer = viewModel.pendingAuctionOffer(),
+                jailOptions = viewModel.activePlayerJailOptions(),
                 onRollDice = { viewModel.rollDice() },
+                onPayFine = { viewModel.payJailFineVoluntarily() },
+                onUseGoojfCard = { viewModel.useGetOutOfJailCard() },
                 onBuy = { viewModel.buyPendingAsset() },
                 onDecline = { viewModel.declinePendingAsset() },
                 onPlaceBid = { amount -> viewModel.placeBid(amount) },
