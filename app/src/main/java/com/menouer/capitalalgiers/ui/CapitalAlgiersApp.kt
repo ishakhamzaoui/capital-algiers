@@ -113,6 +113,7 @@ fun CapitalAlgiersApp(viewModel: GameSessionViewModel = viewModel()) {
                 if (builderContext != null) {
                     TradeProposalDialog(
                         context = builderContext,
+                        lastRejection = lastRejection,
                         counterpartyContextFor = { playerId -> viewModel.counterpartyTradeContext(playerId) },
                         onPropose = { toPlayerId, offeredCash, requestedCash, offeredAssets, requestedAssets, offeredGoojf, requestedGoojf ->
                             viewModel.proposeTrade(
@@ -124,7 +125,6 @@ fun CapitalAlgiersApp(viewModel: GameSessionViewModel = viewModel()) {
                                 offeredGoojf,
                                 requestedGoojf
                             )
-                            showTradeProposal = false
                         },
                         onClose = { showTradeProposal = false }
                     )

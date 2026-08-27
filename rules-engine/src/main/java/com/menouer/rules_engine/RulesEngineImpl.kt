@@ -170,6 +170,14 @@ class RulesEngineImpl : RulesEngine {
      * passed or timed out" (timeouts are MultiplayerProtocol.md's concern, resolved
      * into an equivalent passAuction call before it ever reaches the engine). Here
      * that means: everyone except the current highest bidder (if any) has passed.
+     *
+     * What happens right after the winner/no-bids outcome is applied depends on
+     * WHY this auction was running (see GameState.postBankruptcyAuctionQueue):
+     * a normal declined-purchase auction returns to the active player's own
+     * AWAITING_OPTIONAL_ACTIONS; a bankruptcy-forfeiture auction instead either
+     * starts the next queued asset's auction, or — once the queue is empty —
+     * performs the advanceToNextPlayer call that was deferred to let these
+     * auctions happen first (§19).
      */
     private fun concludeAuctionIfDone(state: GameState, priorEvents: List<GameEvent>): EngineResult {
         val auction = state.pendingAuction!!
@@ -179,22 +187,32 @@ class RulesEngineImpl : RulesEngine {
         val events = priorEvents.toMutableList()
         val winnerId = auction.highestBidderId
 
-        return if (winnerId != null) {
+        val resolvedState = if (winnerId != null) {
             val winner = state.player(winnerId)
             val updatedWinner = winner.copy(balance = winner.balance - auction.highestBid)
             val updatedAsset = state.assets.getValue(auction.assetId).copy(ownerId = winnerId)
             events += GameEvent.AuctionWon(winnerId, auction.assetId, auction.highestBid)
-            val newState = state.copy(
+            state.copy(
                 players = state.players.replace(updatedWinner),
                 assets = state.assets + (auction.assetId to updatedAsset),
-                phase = TurnPhase.AWAITING_OPTIONAL_ACTIONS,
                 pendingAuction = null
             )
-            EngineResult.Applied(newState, events)
         } else {
             events += GameEvent.AuctionEndedWithNoBids(auction.assetId)
-            val newState = state.copy(phase = TurnPhase.AWAITING_OPTIONAL_ACTIONS, pendingAuction = null)
-            EngineResult.Applied(newState, events)
+            state.copy(pendingAuction = null)
+        }
+
+        val queue = resolvedState.postBankruptcyAuctionQueue
+        return if (queue == null) {
+            EngineResult.Applied(resolvedState.copy(phase = TurnPhase.AWAITING_OPTIONAL_ACTIONS), events)
+        } else {
+            val clearedState = resolvedState.copy(postBankruptcyAuctionQueue = null)
+            if (queue.isNotEmpty()) {
+                startBankruptcyAuction(clearedState, queue, events)
+            } else {
+                val (finalState, turnEvents) = advanceToNextPlayer(clearedState)
+                EngineResult.Applied(finalState, events + turnEvents)
+            }
         }
     }
 
@@ -452,11 +470,10 @@ class RulesEngineImpl : RulesEngine {
         // The fine is deducted automatically before movement, and this roll releases and
         // moves the player regardless of doubles — no bonus roll either way.
         val fine = state.config.constants.jailFine
-        val (settledState, debtEvents) = settleDebt(state, player.id, creditorId = null, fine)
+        val (settledState, debtEvents, forfeitedToBank) = settleDebt(state, player.id, creditorId = null, fine)
         if (settledState.player(player.id).bankrupt) {
             events += debtEvents
-            val (finalState, turnEvents) = advanceToNextPlayer(settledState)
-            return EngineResult.Applied(finalState, events + turnEvents)
+            return endTurnAfterBankDebtBankruptcy(settledState, forfeitedToBank, events)
         }
         events += GameEvent.JailFinePaid(player.id, fine, forced = true)
         events += debtEvents
@@ -556,11 +573,10 @@ class RulesEngineImpl : RulesEngine {
 
             SpaceType.TAX -> {
                 val amount = taxAmountFor(state, space.developerName)
-                val (settledState, debtEvents) = settleDebt(state, player.id, creditorId = null, amount)
+                val (settledState, debtEvents, forfeitedToBank) = settleDebt(state, player.id, creditorId = null, amount)
                 if (settledState.player(player.id).bankrupt) {
                     events += debtEvents
-                    val (finalState, turnEvents) = advanceToNextPlayer(settledState)
-                    EngineResult.Applied(finalState, events + turnEvents)
+                    endTurnAfterBankDebtBankruptcy(settledState, forfeitedToBank, events)
                 } else {
                     events += GameEvent.TaxPaid(player.id, amount)
                     events += debtEvents
@@ -778,10 +794,9 @@ class RulesEngineImpl : RulesEngine {
             }
 
             is CardEffect.PayToBank -> {
-                val (settledState, debtEvents) = settleDebt(currentState, playerId, creditorId = null, effect.amount)
+                val (settledState, debtEvents, forfeitedToBank) = settleDebt(currentState, playerId, creditorId = null, effect.amount)
                 if (settledState.player(playerId).bankrupt) {
-                    val (finalState, turnEvents) = advanceToNextPlayer(settledState)
-                    EngineResult.Applied(finalState, events + debtEvents + turnEvents)
+                    endTurnAfterBankDebtBankruptcy(settledState, forfeitedToBank, events + debtEvents)
                 } else {
                     events += GameEvent.CardBankCharge(playerId, effect.amount)
                     events += debtEvents
@@ -841,10 +856,9 @@ class RulesEngineImpl : RulesEngine {
                 val hotels = ownedAssets.count { it.hasHotel }
                 val amount = effect.perHouse * houses + effect.perHotel * hotels
 
-                val (settledState, debtEvents) = settleDebt(currentState, playerId, creditorId = null, amount)
+                val (settledState, debtEvents, forfeitedToBank) = settleDebt(currentState, playerId, creditorId = null, amount)
                 if (settledState.player(playerId).bankrupt) {
-                    val (finalState, turnEvents) = advanceToNextPlayer(settledState)
-                    EngineResult.Applied(finalState, events + debtEvents + turnEvents)
+                    endTurnAfterBankDebtBankruptcy(settledState, forfeitedToBank, events + debtEvents)
                 } else {
                     events += GameEvent.CardBankCharge(playerId, amount)
                     events += debtEvents
@@ -960,22 +974,42 @@ class RulesEngineImpl : RulesEngine {
      * mortgages more than the debt actually requires.
      *
      * Callers must check `newState.player(debtorId).bankrupt` afterward — if true,
-     * the debtor's turn must end immediately (they can't take optional actions), by
-     * calling advanceToNextPlayer rather than proceeding normally.
+     * the debtor's turn must end immediately (they can't take optional actions).
+     * For a debt to the Bank (creditorId == null), route through
+     * endTurnAfterBankDebtBankruptcy(state, forfeitedToBank, events) rather than
+     * calling advanceToNextPlayer directly, so any forfeited assets get auctioned
+     * first per §19. For a debt to another player, advanceToNextPlayer directly
+     * is correct (forfeitedToBank is always empty in that case — no auction needed
+     * since a named creditor receives the assets outright).
+     *
+     * Result of [settleDebt]. Deliberately a data class (not a bare Pair) so it
+     * destructures positionally as (state, events) for the many call sites that
+     * only need those two — but also carries [forfeitedToBank]: any assets a
+     * bank-debt bankruptcy just forfeited, which GameRules.md §19 requires
+     * auctioning (see endTurnAfterBankDebtBankruptcy). Always empty for debt-to-
+     * another-player settlements and for any settlement that didn't end in
+     * bankruptcy.
      */
-    private fun settleDebt(state: GameState, debtorId: PlayerId, creditorId: PlayerId?, amount: Int): Pair<GameState, List<GameEvent>> {
-        if (amount <= 0) return state to emptyList()
+    private data class DebtSettlement(
+        val state: GameState,
+        val events: List<GameEvent>,
+        val forfeitedToBank: List<AssetId> = emptyList()
+    )
+
+    private fun settleDebt(state: GameState, debtorId: PlayerId, creditorId: PlayerId?, amount: Int): DebtSettlement {
+        if (amount <= 0) return DebtSettlement(state, emptyList())
 
         val debtor = state.player(debtorId)
         if (debtor.balance >= amount) {
-            return transferCash(state, debtorId, creditorId, amount) to emptyList()
+            return DebtSettlement(transferCash(state, debtorId, creditorId, amount), emptyList())
         }
 
         val (liquidatedState, liquidationEvents, covered) = liquidateUntilCovered(state, debtorId, amount)
         return if (covered) {
-            transferCash(liquidatedState, debtorId, creditorId, amount) to liquidationEvents
+            DebtSettlement(transferCash(liquidatedState, debtorId, creditorId, amount), liquidationEvents)
         } else {
-            declareBankruptcy(liquidatedState, debtorId, creditorId, liquidationEvents)
+            val (finalState, events, forfeited) = declareBankruptcy(liquidatedState, debtorId, creditorId, liquidationEvents)
+            DebtSettlement(finalState, events, forfeited)
         }
     }
 
@@ -1051,10 +1085,13 @@ class RulesEngineImpl : RulesEngine {
 
     /**
      * [creditorId] null means debt to the Bank: remaining assets become unowned and
-     * unmortgaged (GameRules.md §19 says these should be auctioned — Session 8 will
-     * wire that in; for now they're simply returned to the available pool) and any
-     * held Get Out of Jail Free cards return to their own decks. A named creditor
-     * instead receives every remaining asset and all remaining cash directly.
+     * unmortgaged, and any held Get Out of Jail Free cards return to their own decks.
+     * The unowned+unmortgaged assets are then auctioned by the caller
+     * (endTurnAfterBankDebtBankruptcy) per GameRules.md §19 ("Eligible assets are
+     * auctioned") — returned here as [forfeitedToBank] rather than auctioned inline,
+     * since this function's job is just the transfer/reset, not turn-flow sequencing.
+     * A named creditor instead receives every remaining asset and all remaining cash
+     * directly (no auction — GameRules.md §19's "Debt to Another Player" path).
      * Either way the debtor ends at 0 balance, no assets, no cards, bankrupt = true.
      */
     private fun declareBankruptcy(
@@ -1062,7 +1099,7 @@ class RulesEngineImpl : RulesEngine {
         debtorId: PlayerId,
         creditorId: PlayerId?,
         priorEvents: List<GameEvent>
-    ): Pair<GameState, List<GameEvent>> {
+    ): Triple<GameState, List<GameEvent>, List<AssetId>> {
         val debtor = state.player(debtorId)
         val events = priorEvents + GameEvent.PlayerBankrupted(debtorId, creditorId)
         var currentState = state
@@ -1101,7 +1138,58 @@ class RulesEngineImpl : RulesEngine {
 
         val bankruptedPlayer = debtor.copy(balance = 0, bankrupt = true, getOutOfJailCards = emptyList())
         currentState = currentState.copy(players = currentState.players.replace(bankruptedPlayer))
-        return currentState to events
+        return Triple(currentState, events, if (creditorId == null) ownedAssetIds else emptyList())
+    }
+
+    /**
+     * The single place every bank-debt bankruptcy (creditorId == null in
+     * settleDebt) routes through to end the now-bankrupt player's turn.
+     * GameRules.md §19: "Eligible assets are auctioned" — so if any assets
+     * were just forfeited to the Bank, they're auctioned one at a time
+     * (concludeAuctionIfDone drains the rest of the queue and performs this
+     * same deferred advance once it's empty) rather than silently returning
+     * to the unowned pool. Skips straight to advanceToNextPlayer when there's
+     * nothing to auction, OR when this bankruptcy has already left at most
+     * one non-bankrupt player — auctioning forfeited assets to a sole
+     * remaining player (or to no one) is pointless when the match is
+     * already over (§20); advanceToNextPlayer's own game-over check handles
+     * that directly.
+     */
+    private fun endTurnAfterBankDebtBankruptcy(
+        state: GameState,
+        forfeitedToBank: List<AssetId>,
+        priorEvents: List<GameEvent>
+    ): EngineResult {
+        if (forfeitedToBank.isEmpty() || state.nonBankruptPlayers.size <= 1) {
+            val (finalState, turnEvents) = advanceToNextPlayer(state)
+            return EngineResult.Applied(finalState, priorEvents + turnEvents)
+        }
+        return startBankruptcyAuction(state, forfeitedToBank, priorEvents)
+    }
+
+    /**
+     * Starts an auction for the first asset in [queue] (GameRules.md §7's normal
+     * procedure: configured minimum bid, eligible bidders = every non-bankrupt
+     * player), remembering the rest of [queue] on GameState so
+     * concludeAuctionIfDone knows to continue the sequence — see GameState's
+     * postBankruptcyAuctionQueue doc comment for how that's distinguished from
+     * a normal declined-purchase auction.
+     */
+    private fun startBankruptcyAuction(state: GameState, queue: List<AssetId>, priorEvents: List<GameEvent>): EngineResult {
+        val assetId = queue.first()
+        val minimumBid = state.config.constants.auctionMinimumBid
+        val auction = AuctionState(
+            assetId = assetId,
+            highestBid = 0,
+            highestBidderId = null,
+            eligibleBidders = state.nonBankruptPlayers.map { it.id }.toSet()
+        )
+        val newState = state.copy(
+            phase = TurnPhase.IN_AUCTION,
+            pendingAuction = auction,
+            postBankruptcyAuctionQueue = queue.drop(1)
+        )
+        return EngineResult.Applied(newState, priorEvents + GameEvent.AuctionStarted(assetId, minimumBid))
     }
 
     /** For paths that don't route through advanceToNextPlayer but could still reduce non-bankrupt players to 1. */

@@ -6,7 +6,8 @@ import kotlinx.serialization.json.Json
 /**
  * Loads the authoritative economy configuration (BoardEconomy.md / Cards.md,
  * transcribed once into economy-config.json) and produces a [BoardConfig] —
- * the same shape rules-engine already consumes via [SampleEconomyData] in M1.
+ * the same shape rules-engine already consumed via a hand-transcribed sample
+ * fixture in M1 (since removed; this loader is the only source now).
  *
  * This class handles loading and parsing only. Structural validation beyond
  * "does this parse into well-formed DTOs" (40 positions present, 22

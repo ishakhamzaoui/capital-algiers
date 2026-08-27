@@ -1,5 +1,6 @@
 package com.menouer.capitalalgiers.ui.trade
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -7,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -22,6 +24,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -38,13 +41,15 @@ import com.menouer.rules_engine.model.PlayerId
  * with, then what each side offers. No re-validation of trade rules here
  * (buildings-encumbered assets are already excluded from the option lists
  * by GameSessionViewModel — a plain state read, not a rule judgment); an
- * otherwise-invalid combination (e.g. insufficient cash) surfaces via the
- * normal lastRejection banner once "Propose" is tapped, same as every other
- * action in this app.
+ * otherwise-invalid combination (e.g. insufficient cash) surfaces via
+ * [lastRejection], rendered inline and left OPEN rather than dismissed, the
+ * same way PropertyManagerDialog handles a rejected build/mortgage — closing
+ * on any outcome would hide the reason just as it appears.
  */
 @Composable
 fun TradeProposalDialog(
     context: TradeBuilderContext,
+    lastRejection: String?,
     counterpartyContextFor: (PlayerId) -> CounterpartyTradeContext?,
     onPropose: (
         toPlayerId: PlayerId,
@@ -54,7 +59,7 @@ fun TradeProposalDialog(
         requestedAssets: Set<AssetId>,
         offeredGoojf: List<Deck>,
         requestedGoojf: List<Deck>
-    ) -> Unit,
+    ) -> Boolean,
     onClose: () -> Unit
 ) {
     var counterparty by remember { mutableStateOf<TradeParty?>(null) }
@@ -73,8 +78,23 @@ fun TradeProposalDialog(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Propose a trade", style = MaterialTheme.typography.headlineSmall)
+                    Text(
+                        "Propose a trade",
+                        style = MaterialTheme.typography.headlineSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
                     Button(onClick = onClose) { Text("Close") }
+                }
+
+                if (lastRejection != null) {
+                    Text(
+                        text = "Rejected: $lastRejection",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
                 }
 
                 Text(
@@ -82,7 +102,13 @@ fun TradeProposalDialog(
                     style = MaterialTheme.typography.titleSmall,
                     modifier = Modifier.padding(top = 12.dp)
                 )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 4.dp)) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(top = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     context.counterparties.forEach { party ->
                         Button(onClick = {
                             counterparty = party
@@ -131,7 +157,7 @@ fun TradeProposalDialog(
 
                         Button(
                             onClick = {
-                                onPropose(
+                                val accepted = onPropose(
                                     chosen.playerId,
                                     offeredCashText.toIntOrNull() ?: 0,
                                     requestedCashText.toIntOrNull() ?: 0,
@@ -140,6 +166,7 @@ fun TradeProposalDialog(
                                     offeredGoojf.value.toList(),
                                     requestedGoojf.value.toList()
                                 )
+                                if (accepted) onClose()
                             },
                             modifier = Modifier
                                 .fillMaxWidth()

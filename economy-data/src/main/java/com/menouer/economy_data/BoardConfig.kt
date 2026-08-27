@@ -7,7 +7,7 @@ package com.menouer.economy_data
  * source of truth transcribed from BoardEconomy.md / Cards.md), and checked
  * by [EconomyConfigValidator] before use. This shape has been stable since
  * M1 — M2 replaced the *source* of the data (JSON + loader/validator instead
- * of the hand-transcribed SampleEconomyData fixture) without changing what
+ * of the original hand-transcribed sample fixture) without changing what
  * rules-engine consumes.
  */
 data class BoardConfig(

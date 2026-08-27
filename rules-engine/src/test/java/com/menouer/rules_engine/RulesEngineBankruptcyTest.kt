@@ -115,8 +115,8 @@ class RulesEngineBankruptcyTest {
     }
 
     @Test
-    fun `the active player going bankrupt ends their turn immediately`() {
-        var state = TestFixtures.newGame(listOf("p1", "p2", "p3")).own("Dergana", "p1")
+    fun `a bankrupt player who owned nothing has their turn end immediately`() {
+        var state = TestFixtures.newGame(listOf("p1", "p2", "p3")) // p1 owns nothing
         state = state.withBalance("p1", 100)
         state = readyToResolve(state.atPosition("p1", 4)) // IncomeTax, unaffordable
 
@@ -129,17 +129,110 @@ class RulesEngineBankruptcyTest {
         assertTrue(result.events.any { it is GameEvent.TurnChanged })
     }
 
+    // --- Bank-debt bankruptcy with forfeited assets: auctioned before the turn advances (§19) ---
+
     @Test
-    fun `bankruptcy to the bank leaves only two non-bankrupt players and the game continues`() {
+    fun `a bankrupt player's forfeited asset goes to auction instead of the turn advancing immediately`() {
         var state = TestFixtures.newGame(listOf("p1", "p2", "p3")).own("Dergana", "p1")
+        state = state.withBalance("p1", 100)
+        state = readyToResolve(state.atPosition("p1", 4)) // IncomeTax, unaffordable
+
+        val result = applied(engine.resolveLanding(state))
+
+        assertTrue(result.newState.player("p1").bankrupt)
+        assertNull(result.newState.assets.getValue("Dergana").ownerId) // forfeited, not yet sold
+        assertEquals(TurnPhase.IN_AUCTION, result.newState.phase)
+        assertEquals("Dergana", result.newState.pendingAuction?.assetId)
+        assertEquals(setOf("p2", "p3"), result.newState.pendingAuction?.eligibleBidders) // p1 excluded, it's bankrupt
+        assertEquals("p1", result.newState.activePlayerId) // turn hasn't advanced yet -- that's deferred until the auction concludes
+        assertTrue(result.events.any { it is GameEvent.AuctionStarted })
+        assertTrue(result.events.none { it is GameEvent.TurnChanged }) // not yet -- still mid-auction
+    }
+
+    @Test
+    fun `once a bankruptcy auction concludes with no bids, the turn finally advances`() {
+        var state = TestFixtures.newGame(listOf("p1", "p2", "p3")).own("Dergana", "p1")
+        state = state.withBalance("p1", 100)
+        state = readyToResolve(state.atPosition("p1", 4))
+        val afterBankruptcy = applied(engine.resolveLanding(state)).newState
+
+        val afterP2Passes = applied(engine.passAuction(afterBankruptcy, "p2"))
+        assertEquals(TurnPhase.IN_AUCTION, afterP2Passes.newState.phase) // p3 hasn't acted yet
+
+        val result = applied(engine.passAuction(afterP2Passes.newState, "p3"))
+
+        assertNull(result.newState.assets.getValue("Dergana").ownerId) // stayed unowned, per §7
+        assertEquals("p2", result.newState.activePlayerId) // NOW the deferred turn-advance runs
+        assertEquals(TurnPhase.AWAITING_ROLL, result.newState.phase)
+        assertTrue(result.events.any { it is GameEvent.AuctionEndedWithNoBids })
+        assertTrue(result.events.any { it is GameEvent.TurnChanged })
+    }
+
+    @Test
+    fun `once a bankruptcy auction concludes with a winning bid, ownership transfers and the turn advances`() {
+        var state = TestFixtures.newGame(listOf("p1", "p2", "p3")).own("Dergana", "p1")
+        state = state.withBalance("p1", 100)
+        state = readyToResolve(state.atPosition("p1", 4))
+        val afterBankruptcy = applied(engine.resolveLanding(state)).newState
+        val minimumBid = afterBankruptcy.config.constants.auctionMinimumBid
+
+        val afterBid = applied(engine.placeBid(afterBankruptcy, "p2", minimumBid))
+        val result = applied(engine.passAuction(afterBid.newState, "p3"))
+
+        val p2 = result.newState.player("p2")
+        assertEquals("p2", result.newState.assets.getValue("Dergana").ownerId)
+        assertEquals(150_000 - minimumBid, p2.balance)
+        assertEquals("p2", result.newState.activePlayerId)
+        assertEquals(TurnPhase.AWAITING_ROLL, result.newState.phase)
+        assertTrue(result.events.any { it is GameEvent.AuctionWon })
+    }
+
+    @Test
+    fun `multiple assets forfeited to the bank are auctioned one at a time before the turn advances`() {
+        var state = TestFixtures.newGame(listOf("p1", "p2", "p3"))
+            .own("Dergana", "p1")
+            .own("OuedKoriche", "p1")
+        state = state.withBalance("p1", 100)
+        state = readyToResolve(state.atPosition("p1", 4))
+
+        val afterBankruptcy = applied(engine.resolveLanding(state)).newState
+        // Auction order follows economy-config.json's property order (Dergana before
+        // OuedKoriche) -- the queue mechanism itself doesn't care about order, only
+        // that every forfeited asset gets one, sequentially.
+        assertEquals("Dergana", afterBankruptcy.pendingAuction?.assetId)
+        assertEquals(listOf("OuedKoriche"), afterBankruptcy.postBankruptcyAuctionQueue)
+
+        val afterFirstAssetDone = applied(
+            engine.passAuction(applied(engine.passAuction(afterBankruptcy, "p2")).newState, "p3")
+        ).newState
+        // First asset concluded with no bids; second asset's auction should have started automatically.
+        assertEquals(TurnPhase.IN_AUCTION, afterFirstAssetDone.phase)
+        assertEquals("OuedKoriche", afterFirstAssetDone.pendingAuction?.assetId)
+        assertEquals(emptyList<String>(), afterFirstAssetDone.postBankruptcyAuctionQueue)
+
+        val result = applied(
+            engine.passAuction(applied(engine.passAuction(afterFirstAssetDone, "p2")).newState, "p3")
+        )
+        assertNull(result.newState.assets.getValue("Dergana").ownerId)
+        assertNull(result.newState.assets.getValue("OuedKoriche").ownerId)
+        assertEquals("p2", result.newState.activePlayerId) // only advances once BOTH auctions are done
+        assertEquals(TurnPhase.AWAITING_ROLL, result.newState.phase)
+    }
+
+    @Test
+    fun `a bankruptcy that leaves only one non-bankrupt player skips the auction entirely`() {
+        // Only 2 players -- p1's bankruptcy immediately ends the match, so auctioning
+        // Dergana to the sole remaining player would be pointless (GameRules.md §20).
+        var state = TestFixtures.newGame(listOf("p1", "p2")).own("Dergana", "p1")
         state = state.withBalance("p1", 100)
         state = readyToResolve(state.atPosition("p1", 4))
 
         val result = applied(engine.resolveLanding(state))
 
-        assertTrue(result.newState.nonBankruptPlayers.map { it.id }.containsAll(listOf("p2", "p3")))
-        assertEquals(2, result.newState.nonBankruptPlayers.size)
-        assertEquals(TurnPhase.AWAITING_ROLL, result.newState.phase) // game continues, not over
+        assertEquals(TurnPhase.GAME_OVER, result.newState.phase) // not IN_AUCTION
+        assertNull(result.newState.assets.getValue("Dergana").ownerId) // forfeited, never auctioned
+        assertNull(result.newState.pendingAuction)
+        assertTrue(result.events.any { it is GameEvent.GameEnded })
     }
 
     @Test

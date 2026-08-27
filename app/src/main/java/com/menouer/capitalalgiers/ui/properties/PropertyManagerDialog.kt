@@ -17,6 +17,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -54,7 +55,13 @@ fun PropertyManagerDialog(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("My properties", style = MaterialTheme.typography.headlineSmall)
+                    Text(
+                        "My properties",
+                        style = MaterialTheme.typography.headlineSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
                     Button(onClick = onClose) { Text("Close") }
                 }
 
@@ -74,7 +81,7 @@ fun PropertyManagerDialog(
                         modifier = Modifier.padding(top = 16.dp)
                     )
                 } else {
-                    LazyColumn(modifier = Modifier.padding(top = 12.dp)) {
+                    LazyColumn(modifier = Modifier.weight(1f, fill = false).padding(top = 12.dp)) {
                         items(assets, key = { it.assetId }) { asset ->
                             OwnedAssetRow(
                                 asset = asset,

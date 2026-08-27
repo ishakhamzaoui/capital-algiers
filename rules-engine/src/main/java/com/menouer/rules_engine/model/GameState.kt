@@ -22,6 +22,18 @@ import com.menouer.rules_engine.dice.DiceRoll
  * that produces a roll sets this flag to exactly what it means, and endTurn
  * simply reads it — that way "was this double special" is decided once, at
  * the one place that knows the context, instead of being re-guessed later.
+ *
+ * [pendingAuction]/[pendingTrade] track an in-progress auction/trade the same
+ * way for both causes that can start one: a normal declined purchase
+ * (GameRules.md §7), and a bank-debt bankruptcy forfeiting assets that must
+ * also be auctioned (§19's "Eligible assets are auctioned"). Which cause is
+ * in effect is distinguished by [postBankruptcyAuctionQueue]: null means
+ * "not part of a bankruptcy sequence" (the normal declined-purchase path,
+ * which returns to AWAITING_OPTIONAL_ACTIONS once the auction concludes);
+ * non-null (even if empty) means "resume by auctioning the next queued asset,
+ * or once the queue is empty, advance to the next player" — since a bank-debt
+ * bankruptcy always happens mid the debtor's OWN turn resolution, with no
+ * optional-actions phase for them to return to.
  */
 data class GameState(
     val stateVersion: Long = 0,
@@ -38,7 +50,8 @@ data class GameState(
     val lastRoll: DiceRoll? = null,
     val pendingBonusRoll: Boolean = false,
     val pendingAuction: AuctionState? = null,
-    val pendingTrade: TradeState? = null
+    val pendingTrade: TradeState? = null,
+    val postBankruptcyAuctionQueue: List<AssetId>? = null
 ) {
     val activePlayer: PlayerState
         get() = players.first { it.id == activePlayerId }
