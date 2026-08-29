@@ -48,4 +48,29 @@ sealed class HostMessage {
         val inResponseToMessageId: String?,
         val detail: String? = null
     ) : HostMessage()
+
+    /**
+     * Broadcast whenever lobby membership or readiness changes (a join, a
+     * `ReadyChanged`, or a connection-status flip while still in the
+     * lobby) — MultiplayerProtocol.md §3 step 7, "Host broadcasts lobby
+     * changes." Added in Session 3 (HostSession) rather than Session 1,
+     * since Session 1 deliberately deferred anything snapshot-shaped.
+     *
+     * This is intentionally NOT a full `GameStateSnapshot` — just enough
+     * for lobby UI (SRS.md FR-003: names, tokens/readiness, capacity). Once
+     * Session 4 lands a real snapshot type, match-start moves to
+     * broadcasting that instead of reusing this one more time for the
+     * "lobby just closed" moment (see `HostSession.startMatch`'s own doc).
+     */
+    data class LobbyStateChanged(
+        val players: List<LobbyPlayerView>,
+        val matchCapacity: Int
+    ) : HostMessage()
+
+    data class LobbyPlayerView(
+        val playerId: PlayerId,
+        val displayName: String,
+        val ready: Boolean,
+        val connected: Boolean
+    )
 }
