@@ -11,6 +11,7 @@ import com.menouer.rules_engine.RulesEngineImpl
 import com.menouer.rules_engine.dice.ScriptedDiceSource
 import com.menouer.rules_engine.model.TurnPhase
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -35,6 +36,11 @@ class HostSessionTest {
     )
 
     private fun join(host: HostSession, name: String, messageId: String): String {
+        val result = joinAndGetResult(host, name, messageId)
+        return result.assignedPlayerId
+    }
+
+    private fun joinAndGetResult(host: HostSession, name: String, messageId: String): DispatchResult.Joined {
         val result = host.handle(
             ClientEnvelope(
                 messageId = messageId,
@@ -46,7 +52,7 @@ class HostSessionTest {
             )
         )
         check(result is DispatchResult.Joined) { "expected Joined, got $result" }
-        return result.assignedPlayerId
+        return result
     }
 
     // ---- Lobby / join / start ----------------------------------------------
@@ -81,13 +87,30 @@ class HostSessionTest {
     }
 
     @Test
+    fun `join also returns a JoinAccepted snapshot for the new client only`() {
+        val host = session()
+        join(host, "Amine", "m1")
+
+        val result = joinAndGetResult(host, "Yasmine", "m2")
+        assertEquals("p1", result.joinAccepted.assignedPlayerId)
+
+        val snapshot = result.joinAccepted.snapshot
+        assertEquals(MatchStatus.LOBBY, snapshot.matchStatus)
+        assertEquals(setOf("p0", "p1"), snapshot.players.map { it.playerId }.toSet())
+        // The snapshot's own stateVersion matches what the lobby broadcast just reported.
+        assertEquals(result.broadcasts.single().stateVersion, snapshot.stateVersion)
+    }
+
+    @Test
     fun `starting a match with two players initializes GameState correctly`() {
         val host = session()
         join(host, "Amine", "m1")
         join(host, "Yasmine", "m2")
 
         val result = host.startMatch()
-        assertTrue(result is DispatchResult.Applied)
+        check(result is DispatchResult.Applied)
+        val snapshotMsg = result.broadcasts.single().messages.single() as HostMessage.Snapshot
+        assertEquals(TurnPhase.AWAITING_ROLL, snapshotMsg.snapshot.phase)
         assertEquals(MatchStatus.IN_PROGRESS, host.currentMatchStatus())
 
         val state = host.currentGameState()!!
@@ -200,37 +223,63 @@ class HostSessionTest {
     // ---- Reconnect / disconnect bookkeeping ---------------------------------
 
     @Test
-    fun `reconnect broadcasts a connection-status change`() {
+    fun `reconnect sends a snapshot but does not mark connected until acknowledged`() {
         val host = session()
         join(host, "Amine", "m1")
         join(host, "Yasmine", "m2")
+        host.markDisconnected("p0")
 
-        val disconnectBroadcast = host.markDisconnected("p0")
-        val connChanged = disconnectBroadcast.messages.single() as HostMessage.PlayerConnectionChanged
-        assertEquals("p0", connChanged.playerId)
-        assertEquals(false, connChanged.connected)
-
-        val result = host.handle(
+        val reconnectResult = host.handle(
             ClientEnvelope(
                 "reconnect-1", PROTOCOL_VERSION, GAME_ID, "p0", host.currentStateVersion(),
                 ClientMessage.ReconnectRequest(matchLocalPlayerId = "p0")
             )
         )
-        check(result is DispatchResult.Applied)
-        val reconnectMsg = result.broadcasts.single().messages.single() as HostMessage.PlayerConnectionChanged
-        assertEquals("p0", reconnectMsg.playerId)
-        assertEquals(true, reconnectMsg.connected)
+        check(reconnectResult is DispatchResult.SnapshotSent)
+        // Sending the snapshot is a read, not a mutation: p0 isn't connected yet.
+        val p0InSnapshot = reconnectResult.message.snapshot.players.single { it.playerId == "p0" }
+        assertFalse(p0InSnapshot.connected)
+        val versionAfterReconnectRequest = host.currentStateVersion()
+
+        val ackResult = host.handle(
+            ClientEnvelope(
+                "ack-1", PROTOCOL_VERSION, GAME_ID, "p0", host.currentStateVersion(),
+                ClientMessage.ClientAcknowledgement(acknowledgedStateVersion = versionAfterReconnectRequest)
+            )
+        )
+        check(ackResult is DispatchResult.Applied)
+        val connChanged = ackResult.broadcasts.single().messages.single() as HostMessage.PlayerConnectionChanged
+        assertEquals("p0", connChanged.playerId)
+        assertEquals(true, connChanged.connected)
+        assertEquals(versionAfterReconnectRequest + 1, ackResult.broadcasts.single().stateVersion)
     }
 
     @Test
-    fun `snapshot request from a known connected player is accepted as a no-op for now`() {
+    fun `an ordinary acknowledgement (not mid-reconnect) is just a no-op`() {
         val host = session()
         join(host, "Amine", "m1")
+        val versionBefore = host.currentStateVersion()
+
+        val result = host.handle(
+            ClientEnvelope("ack-1", PROTOCOL_VERSION, GAME_ID, "p0", host.currentStateVersion(), ClientMessage.ClientAcknowledgement(0))
+        )
+        assertEquals(DispatchResult.Applied(emptyList()), result)
+        assertEquals(versionBefore, host.currentStateVersion())
+    }
+
+    @Test
+    fun `snapshot request returns real current state without bumping stateVersion`() {
+        val host = session()
+        join(host, "Amine", "m1")
+        val versionBefore = host.currentStateVersion()
 
         val result = host.handle(
             ClientEnvelope("snap-1", PROTOCOL_VERSION, GAME_ID, "p0", host.currentStateVersion(), ClientMessage.SnapshotRequest)
         )
-        assertEquals(DispatchResult.Applied(emptyList()), result)
+        check(result is DispatchResult.SnapshotSent)
+        assertEquals(GAME_ID, result.message.snapshot.gameId)
+        assertEquals(MatchStatus.LOBBY, result.message.snapshot.matchStatus)
+        assertEquals(versionBefore, host.currentStateVersion())
     }
 
     @Test

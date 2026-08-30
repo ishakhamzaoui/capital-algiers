@@ -1,5 +1,6 @@
 package com.menouer.protocol.message
 
+import com.menouer.protocol.snapshot.GameStateSnapshot
 import com.menouer.rules_engine.model.GameEvent
 import com.menouer.rules_engine.model.PlayerId
 
@@ -16,26 +17,39 @@ import com.menouer.rules_engine.model.PlayerId
  * would just drift out of sync with rules-engine's real event set as it
  * evolves.
  *
- * [JoinAccepted] and a first-class `GameStateSnapshot` type are deliberately
- * NOT included yet. Both need the full §18 snapshot shape (players,
- * positions, ownership, mortgages, deck state, active auction/trade, etc.),
- * which is Session 4's job — adding a throwaway placeholder now would just
- * mean redesigning it twice. `AuctionStarted`/`AuctionUpdated` for a
- * *rejoining* client and `JoinAccepted` both get wired up together once
- * that snapshot type exists.
- *
- * Not `@Serializable`: `GameEvent` and the enums it references are not
- * annotated for kotlinx.serialization, and editing `:rules-engine`/
+ * Not `@Serializable` as a whole: `GameEvent` and the enums it references
+ * are not annotated for kotlinx.serialization, and editing `:rules-engine`/
  * `:economy-data` production code is off-limits for this module (see
  * `EnumSerializers.kt`'s doc for the same constraint on `ClientMessage`).
  * Real JSON-over-socket wire encoding for host events is deferred to M5
  * (Real LAN Networking) — the likely shape then is a serializable DTO
  * translation layer over `GameEvent`, not retrofitting annotations onto
- * rules-engine itself.
+ * rules-engine itself. [JoinAccepted] and [Snapshot] are the exception:
+ * their payload, `GameStateSnapshot` (Session 4), IS fully `@Serializable`
+ * already, since a snapshot is large/infrequent enough to be worth doing
+ * properly now rather than deferring to M5 like `GameEvent` is.
  */
 sealed class HostMessage {
 
     data class JoinRejected(val reason: ErrorCode) : HostMessage()
+
+    /**
+     * Sent only to the newly-joined client — never broadcast to the rest of
+     * the lobby (they get [LobbyStateChanged] instead). Carries the
+     * identity the host just assigned plus a full synchronization snapshot
+     * (§18), per §3 steps 4-5 ("Host accepts... sends an authoritative
+     * snapshot").
+     */
+    data class JoinAccepted(val assignedPlayerId: PlayerId, val snapshot: GameStateSnapshot) : HostMessage()
+
+    /**
+     * A full resynchronization snapshot (§11/§18) sent only to the one
+     * requesting/reconnecting client — never broadcast. Used for both an
+     * explicit `SnapshotRequest` and the snapshot half of the reconnect
+     * flow (§4: sent before the host restores connected status, not after
+     * — see `HostSession.handleReconnect`).
+     */
+    data class Snapshot(val snapshot: GameStateSnapshot) : HostMessage()
 
     /** Wraps one rules-engine `GameEvent` for incremental broadcast (§11's "Event Update"). */
     data class GameEventMessage(val event: GameEvent) : HostMessage()
@@ -56,11 +70,13 @@ sealed class HostMessage {
      * changes." Added in Session 3 (HostSession) rather than Session 1,
      * since Session 1 deliberately deferred anything snapshot-shaped.
      *
-     * This is intentionally NOT a full `GameStateSnapshot` — just enough
-     * for lobby UI (SRS.md FR-003: names, tokens/readiness, capacity). Once
-     * Session 4 lands a real snapshot type, match-start moves to
-     * broadcasting that instead of reusing this one more time for the
-     * "lobby just closed" moment (see `HostSession.startMatch`'s own doc).
+     * Still used for lobby-only changes even now that [Snapshot] exists —
+     * this is intentionally lighter-weight (SRS.md FR-003: names,
+     * readiness, capacity) than a full snapshot, which has nothing
+     * meaningful to add while still in the lobby anyway. Match-start itself
+     * now broadcasts a real [Snapshot] instead of reusing this one more
+     * time (see `HostSession.startMatch`), exactly as flagged when this
+     * type was first added.
      */
     data class LobbyStateChanged(
         val players: List<LobbyPlayerView>,

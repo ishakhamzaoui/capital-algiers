@@ -208,10 +208,23 @@ class RequestValidatorTest {
     }
 
     @Test
-    fun `acknowledgement is rejected from a disconnected sender`() {
+    fun `acknowledgement succeeds from a known but currently disconnected sender (mid-reconnect)`() {
+        // A client sends ClientAcknowledgement specifically as the last step
+        // of reconnecting (MultiplayerProtocol.md §4/§8) — at that point it
+        // is, by definition, not yet marked connected. Requiring
+        // connected-ness here would make finishing a reconnect impossible.
         val result = validator().validate(
             envelope(senderId = "p1", payload = ClientMessage.ClientAcknowledgement(acknowledgedStateVersion = 10)),
             context(connectedPlayerIds = setOf("p2"))
+        )
+        assertNull(result)
+    }
+
+    @Test
+    fun `acknowledgement is rejected from a sender who never joined`() {
+        val result = validator().validate(
+            envelope(senderId = "ghost", payload = ClientMessage.ClientAcknowledgement(acknowledgedStateVersion = 10)),
+            context()
         )
         assertEquals(ErrorCode.UNAUTHORIZED_PLAYER, result)
     }

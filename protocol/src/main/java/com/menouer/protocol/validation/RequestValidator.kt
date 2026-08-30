@@ -101,15 +101,26 @@ class RequestValidator(private val deduplicator: RequestDeduplicator) {
 
     /**
      * Shared by `SnapshotRequest` and `ClientAcknowledgement`. §8 steps
-     * performed: 1's membership half (2: sender must be a known, currently
-     * connected participant), 3, 4.
+     * performed: 1's membership half (2: sender must be a known match
+     * participant), 3, 4.
+     *
+     * Deliberately does NOT also require the sender to be currently marked
+     * connected. This was originally checked (`isKnownAndConnected`) until
+     * Session 4's reconnect sequencing exposed it as a real bug:
+     * MultiplayerProtocol.md §4/§8 has the host send a fresh snapshot on
+     * `ReconnectRequest`, wait for the client's `ClientAcknowledgement`, and
+     * only THEN "restore connected status" — meaning the very
+     * `ClientAcknowledgement` that's supposed to complete a reconnect would
+     * always arrive from a sender not yet marked connected. Requiring
+     * connected-ness here made finishing a reconnect impossible. See
+     * `HostSession.handleAcknowledgement`'s reconnect-ack bookkeeping.
      *
      * Steps 5-9 don't apply, same reasoning as [validateReconnect] —
-     * these messages are how a client gets (or confirms it is) in sync,
-     * so they can't themselves require being already in sync.
+     * these messages are how a client gets (or confirms it is) in sync, so
+     * they can't themselves require being already in sync.
      */
     private fun validateResyncOnly(envelope: ClientEnvelope, context: ValidationContext): ErrorCode? {
-        if (!isKnownAndConnected(envelope.senderId, context)) return ErrorCode.UNAUTHORIZED_PLAYER
+        if (envelope.senderId !in context.knownPlayerIds) return ErrorCode.UNAUTHORIZED_PLAYER
 
         checkProtocolVersion(envelope, context)?.let { return it }
         checkDuplicate(envelope)?.let { return it }

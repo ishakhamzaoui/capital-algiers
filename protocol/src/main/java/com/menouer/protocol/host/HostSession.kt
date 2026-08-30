@@ -7,6 +7,9 @@ import com.menouer.protocol.error.EngineErrorMapper
 import com.menouer.protocol.message.ClientMessage
 import com.menouer.protocol.message.ErrorCode
 import com.menouer.protocol.message.HostMessage
+import com.menouer.protocol.snapshot.GameStateSnapshot
+import com.menouer.protocol.snapshot.SnapshotBuilder
+import com.menouer.protocol.snapshot.SnapshotContext
 import com.menouer.protocol.validation.MatchStatus
 import com.menouer.protocol.validation.RequestValidator
 import com.menouer.protocol.validation.ValidationContext
@@ -21,7 +24,14 @@ import com.menouer.rules_engine.model.PlayerState
 import com.menouer.rules_engine.model.TradeProposal
 import com.menouer.rules_engine.model.TurnPhase
 
-/** One joined lobby member, before or after the match has started. */
+/**
+ * One joined lobby member, before or after the match has started.
+ * `displayName`/`ready` have no equivalent on rules-engine's `PlayerState` —
+ * a display name and lobby readiness are protocol/lobby concerns, not
+ * rules concepts — so this is the only place either is tracked, both
+ * before and after the match starts (see `SnapshotBuilder`, which looks
+ * this up by id to fill in a post-start snapshot's display names).
+ */
 data class JoinedPlayer(
     val id: PlayerId,
     val displayName: String,
@@ -40,11 +50,24 @@ sealed class DispatchResult {
     /**
      * `JoinRequest`'s success case. [assignedPlayerId] is what the
      * transport layer (Session 5) needs to address this connection as
-     * going forward. A real `JoinAccepted` reply carrying a full snapshot
-     * is Session 4's job — [broadcasts] here only carries the lobby
-     * roster update sent to everyone else.
+     * going forward. [joinAccepted] is what should be sent back to that one
+     * client only; [broadcasts] is the lobby roster update sent to
+     * everyone else.
      */
-    data class Joined(val assignedPlayerId: PlayerId, val broadcasts: List<HostBroadcast>) : DispatchResult()
+    data class Joined(
+        val assignedPlayerId: PlayerId,
+        val broadcasts: List<HostBroadcast>,
+        val joinAccepted: HostMessage.JoinAccepted
+    ) : DispatchResult()
+
+    /**
+     * The result of `SnapshotRequest` or `ReconnectRequest`: a snapshot for
+     * the requesting client only — never broadcast, and (deliberately)
+     * carries no `stateVersion` bump of its own, since reading current
+     * state doesn't change it (see `HostSession.handleReconnect`'s doc for
+     * why this matters specifically for reconnection).
+     */
+    data class SnapshotSent(val message: HostMessage.Snapshot) : DispatchResult()
 }
 
 /**
@@ -72,9 +95,27 @@ class HostSession(
     private val validator = RequestValidator(deduplicator)
     private val versionCounter = StateVersionCounter()
 
+    /**
+     * TechnicalSpecification.md §9: host and client must ship the same
+     * economy config, caught the same way as a protocolVersion mismatch.
+     * `BoardConfig` is a data class, so its structural `hashCode()` changes
+     * whenever any economy/board value does — no hand-maintained version
+     * string to forget to bump.
+     */
+    private val matchConfigId: String = config.hashCode().toString()
+
     private var matchStatus: MatchStatus = MatchStatus.LOBBY
     private val joinedPlayers = mutableListOf<JoinedPlayer>()
     private val connectedPlayerIds = mutableSetOf<PlayerId>()
+
+    /**
+     * Players who have sent `ReconnectRequest` and been sent a snapshot,
+     * but haven't yet sent the `ClientAcknowledgement` that completes the
+     * reconnect (MultiplayerProtocol.md §4/§8) — see [handleReconnect] and
+     * [handleAcknowledgement].
+     */
+    private val pendingReconnects = mutableSetOf<PlayerId>()
+
     private var gameState: GameState? = null
 
     // ---- Read-only views, for callers/tests --------------------------------
@@ -99,9 +140,10 @@ class HostSession(
      * shape, just sourced from joined network players instead of a
      * synchronously-provided name list.
      *
-     * Broadcasts via `LobbyStateChanged` one last time rather than a real
-     * `GameStateSnapshot`/match-started message — Session 4 supersedes this
-     * once a proper snapshot type exists.
+     * Broadcasts a full [HostMessage.Snapshot] once started — every already-
+     * connected client needs the initial `GameState`, not just the "lobby
+     * just closed" roster update `LobbyStateChanged` would give them. This
+     * supersedes Session 3's placeholder, exactly as flagged there.
      */
     fun startMatch(): DispatchResult {
         if (matchStatus != MatchStatus.LOBBY) return DispatchResult.Rejected(ErrorCode.GAME_STARTED)
@@ -128,12 +170,15 @@ class HostSession(
         )
         matchStatus = MatchStatus.IN_PROGRESS
 
-        return DispatchResult.Applied(listOf(commitLobbyChange()))
+        val version = versionCounter.incrementAndGet()
+        val broadcast = HostBroadcast(version, listOf(HostMessage.Snapshot(buildSnapshot())))
+        return DispatchResult.Applied(listOf(broadcast))
     }
 
     /** For the transport layer (Session 5/7) to call when a connection drops. */
     fun markDisconnected(playerId: PlayerId): HostBroadcast {
         connectedPlayerIds -= playerId
+        pendingReconnects -= playerId // defensive: clears a stale in-flight reconnect, if any
         val version = versionCounter.incrementAndGet()
         return HostBroadcast(version, listOf(HostMessage.PlayerConnectionChanged(playerId, connected = false)))
     }
@@ -148,20 +193,22 @@ class HostSession(
             is ClientMessage.JoinRequest -> handleJoin(message)
             is ClientMessage.ReadyChanged -> handleReadyChanged(envelope.senderId, message)
             is ClientMessage.ReconnectRequest -> handleReconnect(envelope.senderId)
-            is ClientMessage.SnapshotRequest -> handleResyncPlaceholder()
-            is ClientMessage.ClientAcknowledgement -> handleResyncPlaceholder()
+            is ClientMessage.SnapshotRequest -> handleSnapshotRequest()
+            is ClientMessage.ClientAcknowledgement -> handleAcknowledgement(envelope.senderId)
             else -> handleGameplay(envelope.senderId, message)
         }
     }
-
-    /** Validated but a no-op for now: real snapshot content is Session 4's job. */
-    private fun handleResyncPlaceholder(): DispatchResult = DispatchResult.Applied(emptyList())
 
     private fun handleJoin(message: ClientMessage.JoinRequest): DispatchResult {
         val assignedId = "p${joinedPlayers.size}"
         joinedPlayers += JoinedPlayer(id = assignedId, displayName = message.displayName, token = message.token)
         connectedPlayerIds += assignedId
-        return DispatchResult.Joined(assignedId, listOf(commitLobbyChange()))
+
+        val lobbyBroadcast = commitLobbyChange()
+        // Read after commitLobbyChange() so the snapshot's own stateVersion
+        // matches what everyone else just received.
+        val joinAccepted = HostMessage.JoinAccepted(assignedId, buildSnapshot())
+        return DispatchResult.Joined(assignedId, listOf(lobbyBroadcast), joinAccepted)
     }
 
     private fun handleReadyChanged(senderId: PlayerId, message: ClientMessage.ReadyChanged): DispatchResult {
@@ -172,7 +219,34 @@ class HostSession(
         return DispatchResult.Applied(listOf(commitLobbyChange()))
     }
 
+    /**
+     * Per MultiplayerProtocol.md §4/§8: the host sends a fresh snapshot on
+     * reconnect and only "restores connected status" once the client's
+     * `ClientAcknowledgement` confirms it applied that snapshot — see
+     * [handleAcknowledgement]. Deliberately does NOT mark [senderId]
+     * connected or broadcast anything here; both happen on acknowledgement.
+     * No `stateVersion` bump either: sending a snapshot reports current
+     * state, it doesn't change it.
+     */
     private fun handleReconnect(senderId: PlayerId): DispatchResult {
+        pendingReconnects += senderId
+        return DispatchResult.SnapshotSent(HostMessage.Snapshot(buildSnapshot()))
+    }
+
+    /** A query, not a mutation — no `stateVersion` bump, no broadcast, per §11. */
+    private fun handleSnapshotRequest(): DispatchResult =
+        DispatchResult.SnapshotSent(HostMessage.Snapshot(buildSnapshot()))
+
+    /**
+     * Finalizes a reconnect if [senderId] has one pending (see
+     * [handleReconnect]); otherwise this is just the routine post-snapshot
+     * acknowledgement §3 step 6 describes for an ordinary join, which needs
+     * no further action.
+     */
+    private fun handleAcknowledgement(senderId: PlayerId): DispatchResult {
+        if (senderId !in pendingReconnects) return DispatchResult.Applied(emptyList())
+
+        pendingReconnects -= senderId
         connectedPlayerIds += senderId
         val version = versionCounter.incrementAndGet()
         val broadcast = HostBroadcast(version, listOf(HostMessage.PlayerConnectionChanged(senderId, connected = true)))
@@ -297,6 +371,19 @@ class HostSession(
         connectedPlayerIds = connectedPlayerIds.toSet(),
         currentStateVersion = versionCounter.current,
         gameState = gameState
+    )
+
+    private fun buildSnapshot(): GameStateSnapshot = SnapshotBuilder.build(
+        SnapshotContext(
+            gameId = gameId,
+            matchStatus = matchStatus,
+            matchConfigId = matchConfigId,
+            matchCapacity = matchCapacity,
+            stateVersion = versionCounter.current,
+            lobbyPlayers = joinedPlayers.toList(),
+            connectedPlayerIds = connectedPlayerIds.toSet(),
+            gameState = gameState
+        )
     )
 
     private companion object {

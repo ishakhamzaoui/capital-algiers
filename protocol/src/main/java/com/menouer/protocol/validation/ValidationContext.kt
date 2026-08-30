@@ -2,6 +2,7 @@ package com.menouer.protocol.validation
 
 import com.menouer.rules_engine.model.GameState
 import com.menouer.rules_engine.model.PlayerId
+import kotlinx.serialization.Serializable
 
 /**
  * Lobby vs. started vs. finished. This lives at the protocol layer, not
@@ -11,7 +12,12 @@ import com.menouer.rules_engine.model.PlayerId
  * players are still joining a lobby). Pre-start lobby membership/readiness
  * is tracked by whatever owns this enum (Session 3's `HostSession`), not by
  * rules-engine.
+ *
+ * `@Serializable` directly (unlike rules-engine's own enums) since this one
+ * is fully protocol-owned — no module-boundary constraint applies. Needed
+ * by `GameStateSnapshot` (Session 4).
  */
+@Serializable
 enum class MatchStatus { LOBBY, IN_PROGRESS, ENDED }
 
 /**
