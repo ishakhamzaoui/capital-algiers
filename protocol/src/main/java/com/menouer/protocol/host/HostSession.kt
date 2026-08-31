@@ -124,6 +124,8 @@ class HostSession(
     fun currentStateVersion(): Long = versionCounter.current
     fun currentGameState(): GameState? = gameState
     fun joinedPlayerIds(): Set<PlayerId> = joinedPlayers.map { it.id }.toSet()
+    fun currentGameId(): String = gameId
+    fun currentProtocolVersion(): Int = protocolVersion
 
     // ---- Host-local actions (no corresponding ClientMessage) ---------------
 
