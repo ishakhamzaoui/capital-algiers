@@ -10,6 +10,11 @@ import com.menouer.protocol.message.HostMessage
 import com.menouer.protocol.snapshot.GameStateSnapshot
 import com.menouer.protocol.snapshot.SnapshotBuilder
 import com.menouer.protocol.snapshot.SnapshotContext
+import com.menouer.protocol.time.Clock
+import com.menouer.protocol.time.SystemClock
+import com.menouer.protocol.time.TimeoutConfig
+import com.menouer.protocol.timeout.TimeoutAction
+import com.menouer.protocol.timeout.TimeoutPolicy
 import com.menouer.protocol.validation.MatchStatus
 import com.menouer.protocol.validation.RequestValidator
 import com.menouer.protocol.validation.ValidationContext
@@ -23,6 +28,7 @@ import com.menouer.rules_engine.model.PlayerId
 import com.menouer.rules_engine.model.PlayerState
 import com.menouer.rules_engine.model.TradeProposal
 import com.menouer.rules_engine.model.TurnPhase
+import java.time.Instant
 
 /**
  * One joined lobby member, before or after the match has started.
@@ -89,7 +95,9 @@ class HostSession(
     private val matchCapacity: Int,
     private val config: BoardConfig,
     private val engine: RulesEngine,
-    private val diceSource: DiceSource
+    private val diceSource: DiceSource,
+    private val clock: Clock = SystemClock,
+    private val timeoutConfig: TimeoutConfig = TimeoutConfig()
 ) {
     private val deduplicator = RequestDeduplicator()
     private val validator = RequestValidator(deduplicator)
@@ -115,6 +123,17 @@ class HostSession(
      * [handleAcknowledgement].
      */
     private val pendingReconnects = mutableSetOf<PlayerId>()
+
+    /** Deadline for the current phase's `normalActionTimeout` default, or null if the phase has none (see [TimeoutPolicy]). */
+    private var pendingActionDeadline: Instant? = null
+
+    /** Deadline for the current auction round's `auctionResponseTimeout`; separate from [pendingActionDeadline] since IN_AUCTION has its own dedicated timeout. */
+    private var auctionDeadline: Instant? = null
+
+    /** When each currently-disconnected player dropped, for `reconnectionGracePeriod` tracking (MultiplayerProtocol.md §13/§14). */
+    private val disconnectedAt = mutableMapOf<PlayerId, Instant>()
+
+    private var lastHeartbeatSentAt: Instant? = null
 
     private var gameState: GameState? = null
 
@@ -171,6 +190,7 @@ class HostSession(
             chestDeck = config.chestDeck.map { it.id }
         )
         matchStatus = MatchStatus.IN_PROGRESS
+        resetDeadlinesForCurrentPhase()
 
         val version = versionCounter.incrementAndGet()
         val broadcast = HostBroadcast(version, listOf(HostMessage.Snapshot(buildSnapshot())))
@@ -181,6 +201,7 @@ class HostSession(
     fun markDisconnected(playerId: PlayerId): HostBroadcast {
         connectedPlayerIds -= playerId
         pendingReconnects -= playerId // defensive: clears a stale in-flight reconnect, if any
+        disconnectedAt[playerId] = clock.now()
         val version = versionCounter.incrementAndGet()
         return HostBroadcast(version, listOf(HostMessage.PlayerConnectionChanged(playerId, connected = false)))
     }
@@ -250,6 +271,7 @@ class HostSession(
 
         pendingReconnects -= senderId
         connectedPlayerIds += senderId
+        disconnectedAt -= senderId
         val version = versionCounter.incrementAndGet()
         val broadcast = HostBroadcast(version, listOf(HostMessage.PlayerConnectionChanged(senderId, connected = true)))
         return DispatchResult.Applied(listOf(broadcast))
@@ -347,8 +369,149 @@ class HostSession(
 
     private fun commitEngineResult(result: EngineResult.Applied): HostBroadcast {
         gameState = result.newState
+        resetDeadlinesForCurrentPhase()
         val version = versionCounter.incrementAndGet()
         return HostBroadcast(version, result.events.map { HostMessage.GameEventMessage(it) })
+    }
+
+    /**
+     * Recomputes [pendingActionDeadline]/[auctionDeadline] for whatever
+     * phase [gameState] is now in. Called after every committed engine
+     * result and once from [startMatch] — the only two places `gameState`'s
+     * phase can change.
+     */
+    private fun resetDeadlinesForCurrentPhase() {
+        val phase = gameState?.phase ?: return
+        val now = clock.now()
+        if (phase == TurnPhase.IN_AUCTION) {
+            auctionDeadline = now.plusSeconds(timeoutConfig.auctionResponseTimeoutSeconds)
+            pendingActionDeadline = null
+        } else {
+            auctionDeadline = null
+            pendingActionDeadline = TimeoutPolicy.defaultActionFor(phase)
+                ?.let { now.plusSeconds(timeoutConfig.normalActionTimeoutSeconds) }
+        }
+    }
+
+    /**
+     * Applies whichever timeout is currently due, if any. Nothing calls
+     * this automatically — there's no coroutines/scheduler dependency in
+     * this project (Session 6 uses an injectable [Clock] instead, mirroring
+     * `DiceSource`'s own seedability), so a real driving loop is left to
+     * whatever schedules it later (Session 7's transport wiring, or a real
+     * timer in M5); tests call it directly after advancing a `FakeClock`.
+     *
+     * Checks in this order:
+     * 1. Reconnection grace period — if the *active* player is disconnected
+     *    and has been gone longer than `reconnectionGracePeriodSeconds`,
+     *    this takes priority over the phase's normal timeout (see the
+     *    LIMITATION note below) and returns immediately: one auto-action
+     *    per call, re-checked on the next call.
+     * 2. Auction round timeout — if in `IN_AUCTION` and the round deadline
+     *    has passed, every still-eligible, not-yet-passed bidder is
+     *    auto-passed.
+     * 3. Normal per-phase timeout — the [TimeoutPolicy] default for
+     *    whatever phase [gameState] is currently in.
+     *
+     * LIMITATION (flagged, not silently worked around): MultiplayerProtocol.md
+     * §13 specifies a disconnected, grace-period-expired player is
+     * "auto-passed through their turns (no dice rolled, no purchases
+     * made)". `RulesEngine`'s current public API has no way to end a turn
+     * without rolling — `applyRoll` is the only method that transitions
+     * away from `AWAITING_ROLL`, and there's no dedicated "skip this
+     * player's turn" call. Implementing the literal "no dice rolled"
+     * behavior would need a new `RulesEngine` capability (e.g.
+     * `skipTurn(state, playerId): EngineResult`) — real rules-engine
+     * production code, out of scope to add unilaterally per this project's
+     * working agreement (flag a real gap, don't silently patch around it).
+     * Until that's decided, grace-period expiry reuses the exact same
+     * [TimeoutPolicy] default as an ordinary `normalActionTimeout` —
+     * still "no player choice exercised on their behalf", but not
+     * literally dice-free at `AWAITING_ROLL`/`AWAITING_JAIL_DECISION`.
+     */
+    fun checkTimeouts(): List<HostBroadcast> {
+        val state = gameState ?: return emptyList()
+        val now = clock.now()
+        val activePlayerId = state.activePlayerId
+
+        val disconnectedSince = disconnectedAt[activePlayerId]
+        if (disconnectedSince != null &&
+            !now.isBefore(disconnectedSince.plusSeconds(timeoutConfig.reconnectionGracePeriodSeconds))
+        ) {
+            return applyPhaseDefault(activePlayerId)
+        }
+
+        if (state.phase == TurnPhase.IN_AUCTION) {
+            val deadline = auctionDeadline ?: return emptyList()
+            return if (!now.isBefore(deadline)) applyAuctionTimeout() else emptyList()
+        }
+
+        val deadline = pendingActionDeadline ?: return emptyList()
+        return if (!now.isBefore(deadline)) applyPhaseDefault(activePlayerId) else emptyList()
+    }
+
+    private fun applyPhaseDefault(playerId: PlayerId): List<HostBroadcast> {
+        val state = gameState ?: return emptyList()
+        val action = TimeoutPolicy.defaultActionFor(state.phase) ?: return emptyList()
+        val result = when (action) {
+            TimeoutAction.AUTO_ROLL -> engine.applyRoll(state, playerId, diceSource.roll())
+            TimeoutAction.AUTO_DECLINE_PURCHASE -> engine.declinePurchase(state, playerId)
+            TimeoutAction.AUTO_END_TURN -> engine.endTurn(state)
+            TimeoutAction.AUTO_DECLINE_TRADE -> engine.resolveTrade(state, accept = false)
+        }
+        return when (result) {
+            is EngineResult.Applied -> commitEngineResultChain(result)
+            is EngineResult.Rejected -> emptyList() // defensive: phase/actor already guaranteed valid by construction
+        }
+    }
+
+    /**
+     * §13: "the host treats the unresponsive bidder as having passed for
+     * that round." This engine's auction model lets any eligible,
+     * not-yet-passed bidder act in any order rather than tracking whose
+     * turn it is to bid (ProjectStatus.md's own decision log: auction
+     * turn-taking is a UI/host convention, not an engine rule) — so
+     * "the unresponsive bidder" (singular) is adapted here to "every
+     * bidder who hasn't acted this round", auto-passing each of them.
+     * Re-checks `gameState.pendingAuction` between each pass: passing one
+     * bidder can conclude the auction entirely (e.g. only one eligible
+     * bidder remained), which must stop this loop rather than continuing
+     * to pass ids from a now-stale bidder list.
+     */
+    private fun applyAuctionTimeout(): List<HostBroadcast> {
+        val broadcasts = mutableListOf<HostBroadcast>()
+        val initialAuction = gameState?.pendingAuction ?: return emptyList()
+        val stillEligible = initialAuction.eligibleBidders - initialAuction.passedBidders
+
+        for (bidderId in stillEligible) {
+            val currentState = gameState ?: break
+            if (currentState.pendingAuction == null) break
+            when (val result = engine.passAuction(currentState, bidderId)) {
+                is EngineResult.Applied -> broadcasts += commitEngineResultChain(result)
+                is EngineResult.Rejected -> {} // already passed / no longer eligible by this point; skip
+            }
+        }
+        return broadcasts
+    }
+
+    /**
+     * Proof of liveness for a client's `HostLossDetector` (Session 6),
+     * per MultiplayerProtocol.md §13's `hostLossHeartbeatIntervalSeconds`.
+     * Returns null when a heartbeat isn't due yet; the transport layer is
+     * expected to call this periodically (e.g. on its own tick) and only
+     * deliver a broadcast when non-null.
+     *
+     * Doesn't bump `stateVersion` — a heartbeat isn't a state change, same
+     * reasoning as a `Snapshot` query (Session 4).
+     */
+    fun maybeSendHeartbeat(): HostBroadcast? {
+        val now = clock.now()
+        val last = lastHeartbeatSentAt
+        if (last != null && now.isBefore(last.plusSeconds(timeoutConfig.hostLossHeartbeatIntervalSeconds))) {
+            return null
+        }
+        lastHeartbeatSentAt = now
+        return HostBroadcast(versionCounter.current, listOf(HostMessage.Heartbeat))
     }
 
     private fun commitLobbyChange(): HostBroadcast {

@@ -89,4 +89,15 @@ sealed class HostMessage {
         val ready: Boolean,
         val connected: Boolean
     )
+
+    /**
+     * Proof of liveness, per MultiplayerProtocol.md §13's
+     * `hostLossHeartbeatIntervalSeconds`. Sent on an interval regardless of
+     * other activity, so an idle-but-healthy match doesn't look
+     * indistinguishable from a lost host to a client's own
+     * `HostLossDetector` (Session 6). Carries no data — any message from
+     * the host counts as liveness, this one exists purely to guarantee one
+     * arrives at least every `hostLossHeartbeatIntervalSeconds`.
+     */
+    data object Heartbeat : HostMessage()
 }

@@ -72,6 +72,21 @@ class InMemoryTransport(private val hostSession: HostSession) : Transport {
         return result
     }
 
+    /**
+     * Drives Session 6's timeout checks — call this on whatever interval a
+     * real scheduler (M5) or a test loop chooses; `HostSession.checkTimeouts`
+     * itself has no timer of its own (see its doc). Any resulting broadcast
+     * is routed exactly like a normal gameplay commit.
+     */
+    fun checkTimeouts() {
+        hostSession.checkTimeouts().forEach { deliverBroadcast(it) }
+    }
+
+    /** Drives Session 6's heartbeat — call on the same kind of interval as [checkTimeouts]. No-op if a heartbeat isn't due yet. */
+    fun maybeSendHeartbeat() {
+        hostSession.maybeSendHeartbeat()?.let { deliverBroadcast(it) }
+    }
+
     override fun send(envelope: ClientEnvelope) {
         when (val result = hostSession.handle(envelope)) {
             is DispatchResult.Rejected ->
